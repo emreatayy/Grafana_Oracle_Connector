@@ -1,9 +1,10 @@
 # Grafana Oracle Connector
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Grafana](https://img.shields.io/badge/Grafana-%E2%89%A512.0-F46800.svg)](https://grafana.com)
+[![Grafana](https://img.shields.io/badge/Grafana-%E2%89%A512.3-F46800.svg)](https://grafana.com)
 [![Oracle](https://img.shields.io/badge/Oracle-%E2%89%A512c-red.svg)](https://www.oracle.com/database/)
-[![Status](https://img.shields.io/badge/status-design%20phase-orange.svg)](#status)
+[![Status](https://img.shields.io/badge/status-F0%20done-brightgreen.svg)](#status)
+[![CI](https://github.com/emreatayy/Grafana_Oracle_Connector/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
 A **Grafana data source plugin for Oracle Database** with an optional
 **Prometheus proxy** mode. It is built on the Grafana plugin SDK with a pure-Go
@@ -44,8 +45,8 @@ procedures) — all driven from the query editor.
 | Stage | State |
 |---|---|
 | Design | ✅ Complete — `docs/project-report.md` (v2) |
-| Empirical verification | ✅ **7 of 8** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4 source) — see `verification/` |
-| Implementation (F0+) | ⏳ Not started — 16-phase roadmap, next step is F0 (scaffold) |
+| Empirical verification | ✅ **8 of 8** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1) — see `verification/` |
+| Implementation | ✅ **F0 done** (scaffold, version matrix, dev environment, CI green) — next: F1 (connection core) |
 
 The report's riskiest assumptions were validated empirically before any code
 was written, which produced two design corrections early:
@@ -58,8 +59,10 @@ was written, which produced two design corrections early:
   indexes (full scan); `TO_DATE('...', 'YYYY-MM-DD HH24:MI:SS')` keeps the
   index and is NLS-independent.
 
-The one remaining open question (the `alerting` flag on Grafana 12.4 / 13.1)
-requires a built plugin and is the first task of F5.
+The last open question — the `alerting` flag on Grafana 12.4 / 13.1 — was
+closed with the F0-built plugin: the datasource loads, the health "Test"
+returns SUCCESS, and the rules API accepts an alert rule that queries it
+(report §21 row 3).
 
 ---
 
@@ -87,7 +90,7 @@ requires a built plugin and is the first task of F5.
 - **Annotations** — time-range annotation queries rendered on panels (§11).
 - **Pure-Go driver** — `sijms/go-ora` (MIT), no OCI / Instant Client, no
   Oracle Client libraries on the target system.
-- **Multi-version** — one build supports Grafana ≥ 12.0, Oracle ≥ 12c, and
+- **Multi-version** — one build supports Grafana ≥ 12.3, Oracle ≥ 12c, and
   Prometheus 2.40+ / 3.x (see [Version Support](#version-support)).
 
 ---
@@ -136,21 +139,24 @@ See [Documentation](#documentation) for the full report.
 
 ## Version Support
 
-Official support matrix (design target — enforced in CI once F0 lands):
+Official support matrix (enforced in CI from F0):
 
 | System | Official support (floor) | Primary (main) lines | CI test matrix |
 |---|---|---|---|
-| **Grafana** | **≥ 12.0** | 12.4, 13.x | `12.4` + `13.1` |
+| **Grafana** | **≥ 12.3** | 12.4, 13.x | `12.4` + `13.1` |
 | **Oracle** | **≥ 12c** | 19c, 21c, 23ai | XE `18c` + `21c` + `23c` |
 | **Prometheus** | **≥ 2.40 + 3.x** | 3.x | `3.5` (LTS) |
 
-Grafana 11.x and Oracle 11g R2 are "works but not supported" (compatible,
-unofficial). The rationale for these policies is in report §2.
+The Grafana floor is 12.3, not 12.0: the pinned `@grafana/ui`/`@grafana/data`
+13.1.0 enforce it (report §2.5). Grafana 11.x and Oracle 11g R2 are "works but
+not supported" (compatible, unofficial). The rationale for these policies is in
+report §2.
 
-Pinned dependencies (verified 2026-08-07):
+Pinned dependencies (pinned at F0, 2026-08-07):
 
 - `github.com/sijms/go-ora/v2` **v2.9.0**
-- Grafana plugin SDK (version pinned in F0)
+- `github.com/grafana/grafana-plugin-sdk-go` **v0.296.1**
+- `@grafana/ui` / `@grafana/data` **13.1.0**
 - Node ≥ 22, Go ≥ 1.26 (development toolchain)
 
 ---
@@ -159,7 +165,7 @@ Pinned dependencies (verified 2026-08-07):
 
 ```
 .
-├── .github/                  # Issue/PR templates, community health files
+├── .github/                  # Issue/PR templates, CI workflow (ci.yml), community health files
 ├── docs/
 │   ├── project-report.md     # Master design & implementation report (v2)
 │   ├── release-and-packaging.md  # Distribution, signing, and release plan
@@ -169,6 +175,18 @@ Pinned dependencies (verified 2026-08-07):
 │   ├── docker-compose.yml    # Oracle 21c + Turkish-charset + Grafana services
 │   ├── go.mod / go.sum
 │   └── README.md             # How to build and run the checks
+├── devenv/                   # Dev-env auxiliary config (prometheus.yml)
+├── src/                      # Frontend (TypeScript/React) — query editor, config editor
+│   ├── plugin.json           # Plugin manifest (id, alerting, annotations, executables)
+│   └── components/ module.ts datasource.ts types.ts
+├── pkg/                      # Backend (Go, plugin SDK)
+│   ├── plugin/               # Datasource, health check, query path
+│   └── models/               # Config/query models
+├── .config/                  # create-plugin build/dev config (webpack, docker base)
+├── docker-compose.yaml       # Dev loop + §17.1 version matrix (profiles)
+├── go.mod / go.sum           # Go backend module
+├── package.json              # Frontend build/test scripts
+├── Magefile.go               # Grafana plugin build (mage)
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
 ├── LICENSE                   # Apache-2.0
@@ -176,9 +194,9 @@ Pinned dependencies (verified 2026-08-07):
 └── SECURITY.md
 ```
 
-> Plugin source (`src/`, `pkg/`, `plugin.json`, `magefile.go`) is created in
-> **F0** — the scaffold phase. This repository is currently in the design +
-> verification stage.
+> **F0 (2026-08-07):** scaffolded with `@grafana/create-plugin` at the repo
+> root — `src/` + `pkg/` + `plugin.json` + `Magefile.go` + the §17.1
+> `docker-compose.yaml` matrix and the F0 unit CI workflow.
 
 ---
 
@@ -215,10 +233,39 @@ ORACLE_PASSWORD=verif_password ORACLE_PORT=1522 go run ./probe --port 1522   # -
 The probe prints a per-check verdict and exits non-zero if any check fails.
 Details in `verification/README.md`.
 
-### Next: F0 scaffold
+### Build and run the plugin (F0+)
 
-F0 creates the plugin skeleton with `@grafana/create-plugin`, wires go-ora and
-the SDK, and sets up the mage build/run loop. See the [Roadmap](#roadmap).
+Install dependencies, then build **backend** and **frontend** separately (both
+write to `dist/`):
+
+```sh
+npm install
+mage -v                    # backend binaries → dist/gpx_oracle_datasource_*
+npm run build              # frontend → dist/module.js (+ copies plugin.json, README, …)
+```
+
+Run it in Grafana via the §17.1 version matrix (built plugin volume-mounted,
+loaded unsigned):
+
+```sh
+docker compose --profile grafana12 up -d grafana12   # Grafana 12.4 → http://127.0.0.1:3001
+docker compose --profile grafana13 up -d grafana13   # Grafana 13.1 → http://127.0.0.1:3002
+```
+
+(The explicit service name keeps the create-plugin dev loop from starting too;
+`dist/` is re-mounted automatically, so after editing code just re-run `mage -v`
+/ `npm run build` and refresh.)
+
+**Hot-reload dev loop** (create-plugin standard): `npm run dev` runs webpack
+watch, `npm run server` starts the dev Grafana (supervisord, port 3000):
+
+```sh
+npm run dev      # terminal 1 — frontend watch
+npm run server   # terminal 2 — dev Grafana + backend
+```
+
+Unit checks (mirror CI): `npm run typecheck && npm run lint && npm run test:ci`
+and `mage test` for the Go backend. Full phase-by-phase detail: report §18.
 
 ---
 
@@ -234,9 +281,10 @@ the SDK, and sets up the mage build/run loop. See the [Roadmap](#roadmap).
 
 ## Roadmap
 
-16 implementation phases in 4 waves (~52–54 person-days). The critical path is
-**F0 → F2 → F3 → F5** (typed time series + alerting) and in parallel
-**F0 → F6** (Prometheus proxy).
+16 implementation phases in 4 waves (~52–54 person-days). **F0 is done**
+(scaffold, version matrix, dev environment, CI green). The critical path going
+forward is **F2 → F3 → F5** (typed time series + alerting) and in parallel
+**F6** (Prometheus proxy).
 
 | Wave | Phases | Scope | Effort |
 |---|---|---|---|
@@ -259,7 +307,7 @@ documented in [`docs/release-and-packaging.md`](docs/release-and-packaging.md).
 
 The tl;dr: a Grafana data source plugin is distributed as a **signed plugin
 archive** (`.zip` / `.tar.gz`) produced by the `mage` build, not as an npm or
-container package. Release automation is created in **F0/F13** when the plugin
+container package. Release automation is created in **F13** when the plugin
 builds; the workflow files will use the standard Grafana plugin release action
 and require a signing API key stored as a GitHub secret.
 

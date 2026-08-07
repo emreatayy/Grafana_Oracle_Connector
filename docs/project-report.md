@@ -118,11 +118,12 @@ This report (a) analyzes the reference project, (b) defines a **version support 
 
 | Dependency | Strategy | Note |
 |---|---|---|
-| `grafana-plugin-sdk-go` | Current stable | The reference project's v0.156.0 (early 2023) is very old; upgraded |
-| `sijms/go-ora/v2` | **v2.9.0** (verified 2026-08-07) | `ColumnTypes` behavior verified (§6.2); #533 native-string behavior persists — always scan into explicit types |
-| `@grafana/ui`, `@grafana/data` | Version compatible with the lowest supported Grafana | Managed by the create-plugin scaffold |
+| `grafana-plugin-sdk-go` | **v0.296.1** (pinned in F0, 2026-08-07) | Resolved by the create-plugin scaffold |
+| `sijms/go-ora/v2` | **v2.9.0** (verified 2026-08-07) | Pinned in `go.mod` at F0 (used from F1); `ColumnTypes` behavior verified (§6.2); #533 native-string behavior persists — always scan into explicit types |
+| `@grafana/ui`, `@grafana/data` | **13.1.0** (pinned in F0) | create-plugin scaffold resolved these; they enforce an **effective Grafana floor of 12.3** (`grafanaDependency >=12.3.0`) — the §2.0 ≥12.0 target is adjusted accordingly; the CI matrix (12.4 + 13.1) is unaffected |
 | `prom/prometheus` (CI) | 3.5 LTS | For e2e |
 | `gvenzl/oracle-xe` (CI) | `18c-slim` + `21c-slim` + `23c-slim` | License acceptance + small footprint; 18c = oldest test floor |
+| `grafana/grafana-oss` (dev matrix) | `12.4.0`; **13.1.x only as `grafana-enterprise:13.1.0`** | `grafana-oss` Docker tags stop at 13.0.2 (2026-06-02); enterprise image = same OSS binary, free pull (§17.1) |
 
 ---
 
@@ -700,7 +701,7 @@ General:  default mode, default format, large-NUMBER policy,
 ```yaml
 services:
   grafana12:  { image: grafana/grafana-oss:12.4,    profiles: ["grafana12"] }
-  grafana13:  { image: grafana/grafana-oss:13.1,    profiles: ["grafana13"] }
+  grafana13:  { image: grafana/grafana-enterprise:13.1, profiles: ["grafana13"] }
   oracle18:   { image: gvenzl/oracle-xe:18c-slim,   profiles: ["oracle18"] }
   oracle21:   { image: gvenzl/oracle-xe:21-slim,    profiles: ["oracle21"] }
   oracle23:   { image: gvenzl/oracle-xe:23c-slim,   profiles: ["oracle23"] }
@@ -713,6 +714,18 @@ services:
 - The plugin build is volume-mounted into the container + `GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS`.
 - Oracle: `gvenzl` images simplify license acceptance; a startup script loads demo data.
 - The `oracle_tr` profile boots a Turkish-charset DB (`WE8ISO8859P9`) to test non-UTF8 round-trips (§6.4).
+
+**Implemented at F0 (2026-08-07):** the matrix lives in the repo-root
+`docker-compose.yaml` (profiles `grafana12`/`grafana13`/`oracle18`/`oracle21`/
+`oracle23`/`oracle_tr`/`prom`) alongside the create-plugin dev-Grafana service
+(the `npm run server` loop); Prometheus config is `devenv/prometheus.yml`. The
+dev matrix binds 127.0.0.1 ports 3001/3002 (Grafana), 1523–1526 (Oracle) and
+9090 (Prometheus) so it never collides with the `verification/` harness, which
+owns 1521/1522. **Note (2026-08-07):** `grafana/grafana-oss` Docker tags stop at
+**13.0.2** (last update 2026-06-02); the `grafana13` service therefore uses
+`grafana/grafana-enterprise:13.1.0` — the same OSS binary, free to pull, and the
+same image the create-plugin dev service already defaults to. Pinned patch
+tags are used (12.4.0 / 13.1.0).
 
 ### 17.2 CI
 
@@ -734,6 +747,7 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 - go-ora and SDK version pins; **verification points:** `ColumnTypes().DatabaseTypeName()` output, `alerting` flag behavior, macro literals working on Oracle (Section 21).
 - docker-compose profiles (17.1); mage build/run loop; CI unit workflow.
 - **DoD:** An empty datasource installs on Grafana 12.4 and 13.1 and passes the health "Test"; CI green.
+- **Status (2026-08-07):** ✅ **done.** Scaffold at repo root (plugin ID `emreatayy-oracle-datasource`, `pkg/` Go backend, `src/` frontend), version pins (§2.5), §17.1 compose profiles, `ci.yml` unit workflow, and check #3 closed (§21 row 3). Health "Test" + alert-rule acceptance verified on 12.4.0 and 13.1.0 (enterprise image — `grafana-oss` has no 13.1 tag).
 
 **F1 — Oracle connection core** · 3 pg
 - ConnString/fields/SID parsing; pool parameters; `context` cancellation; query timeout; read-only guard.
@@ -851,13 +865,13 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 
 ## 21. Assumptions to Verify and Open Decisions
 
-Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0) and Grafana 12.4 source (harness in `verification/`). 7 of 8 resolved; the only open one needs a built plugin:
+Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0), Grafana 12.4/13.1, and the F0-built plugin. **8 of 8 resolved.**
 
 | # | Check | Affects |
 |---|---|---|
 | 1 | **✅ Verified (2026-08-07):** `DatabaseTypeName()` returns go-ora internal names (`VARCHAR2`→`NCHAR`, `TIMESTAMP`→`TimeStampDTY`, `CLOB`→`LongVarChar`, `BLOB`→`LongRaw`, `BINARY_FLOAT`→`IBFloat`); `DecimalSize()` is accurate; `ScanType()` is reliable at the broad level | F2 type mapping + fallback (6.2) |
 | 2 | **✅ Verified (2026-08-07):** #533 persists in v2.9.0 — NUMBER values scan as `string` into `interface{}`, but typed scans (`*int64`, `*float64`) work correctly | 6.2 scan strategy |
-| 3 | With `plugin.json` `alerting: true`, does the datasource appear in the alert-rule builder on Grafana 12.4 and 13.1? *(needs a built plugin — first task of F5)* | ADR-12 |
+| 3 | **✅ Verified (2026-08-07, F0-built plugin on Grafana 12.4.0 + 13.1.0):** the datasource loads unsigned (plugin `enabled=true`), the health "Test" returns SUCCESS, and the rules API **accepts** an alert rule whose query references the datasource type (`/api/v1/provisioning/alert-rules`, uid `efugrzg0mp2pse`). Grafana echoed `maxDataPoints=43200`/`IntervalMs=1000` (matches row 5). Caveat: `grafana-oss` Docker tags stop at **13.0.2**; 13.1.x was verified on `grafana-enterprise:13.1.0` (same OSS binary) | ADR-12 |
 | 4 | **✅ Verified (2026-08-07, ADR-9 revised):** ANSI `TIMESTAMP` literal → FULL SCAN on DATE columns; `TO_DATE('…','YYYY-MM-DD HH24:MI:SS')` → INDEX RANGE SCAN and NLS-independent | ADR-9 / 8.2 |
 | 5 | **✅ Verified (2026-08-07, Grafana source `pkg/services/ngalert`):** alert evaluator defaults `maxDataPoints=43200` (12 h at 1 s) and `IntervalMs=1000ms`; both are passed into the plugin's `QueryDataRequest` → §10.4 formula uses 43200 as the default | 10.4 formula |
 | 6 | **✅ Verified (2026-08-07, `data/sqlutil`):** sqlutil has **no** variable interpolation — `Interpolate` is macro-only and the `Query` model has no variables field (`WithVariables` does not exist). Multi-value `IN(...)` + quoting + `${var:csv}` are built by us (§8.2). | 8.2 / F3 |
@@ -869,7 +883,7 @@ Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0)
 - `sessionTimeZone` default: `UTC` (recommended) — DATE/TIMESTAMP conversion follows it.
 - `maxRows` default: `100_000` (recommended); `maxSeries`: `1000`.
 - `largeNumberMode` default: `string` for table, `float` for time_series (ADR-8).
-- Plugin ID: `orgname-pluginname` format (finalized in F0; e.g., `<org>-oracle-datasource`).
+- Plugin ID: **finalized in F0** as `emreatayy-oracle-datasource` (`<org>-oracle-datasource` format, §18 F0).
 
 ---
 

@@ -2,9 +2,10 @@
 
 How this plugin is packaged, versioned, signed, and released. This document is
 part of the design-first workflow: the **automation** (CI/release workflows)
-is created in **F0** (CI) and **F13** (release packaging), once the plugin
-builds — per the release/CI decision made with the maintainer on 2026-08-07.
-Until then this page is the spec the workflows implement.
+is created in **F0** (CI — **done 2026-08-07**, see §5.1) and **F13**
+(release packaging), once the plugin builds — per the release/CI decision made
+with the maintainer on 2026-08-07. Until then this page is the spec the
+workflows implement.
 
 ## 1. Distribution model — what a Grafana plugin "package" is
 
@@ -102,7 +103,7 @@ GitHub Secrets.
 Signing requires the **backend and plugin.json metadata to be stable**, so the
 sign step runs on the release tag, not on every commit.
 
-## 5. Release automation (planned — created in F0/F13)
+## 5. Release automation (planned — CI created in F0, release in F13)
 
 Once the plugin builds, the repository will contain:
 

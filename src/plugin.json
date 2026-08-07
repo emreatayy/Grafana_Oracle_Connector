@@ -1,0 +1,35 @@
+{
+  "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
+  "type": "datasource",
+  "name": "Oracle Datasource",
+  "id": "emreatayy-oracle-datasource",
+  "metrics": true,
+  "alerting": true,
+  "annotations": true,
+  "backend": true,
+  "executable": "gpx_oracle_datasource",
+  "info": {
+    "description": "Query Oracle Database with typed time series, Unified Alerting, annotations, and operational command execution. Pure-Go driver — no Oracle Client required.",
+    "author": {
+      "name": "emreatayy"
+    },
+    "keywords": ["oracle", "database", "sql", "datasource", "alerting"],
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "links": [
+      {
+        "name": "Project",
+        "url": "https://github.com/emreatayy/Grafana_Oracle_Connector"
+      }
+    ],
+    "screenshots": [],
+    "version": "%VERSION%",
+    "updated": "%TODAY%"
+  },
+  "dependencies": {
+    "grafanaDependency": ">=12.3.0",
+    "plugins": []
+  }
+}

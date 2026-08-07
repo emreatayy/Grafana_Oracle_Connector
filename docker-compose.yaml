@@ -1,0 +1,144 @@
+# Development environment (report §17.1).
+#
+#   docker compose up -d                            # dev Grafana loop (create-plugin; also: npm run server)
+#   docker compose --profile grafana12 up -d grafana12   # Grafana 12.4 with the built plugin mounted (:3001)
+#   docker compose --profile grafana13 up -d grafana13   # Grafana 13.1 with the built plugin mounted (:3002)
+#   docker compose --profile oracle21 up -d oracle21 # Oracle 21c XE (profiles: oracle18/21/23, oracle_tr)
+#   docker compose --profile prom up -d              # Prometheus (+ optional exporter)
+#
+# NOTE: pass the explicit service name (grafana12 / grafana13 / …) on matrix
+# runs. The create-plugin dev `grafana` service has no profile, so it would
+# otherwise be started alongside (it runs a webpack watch loop).
+#
+# The plugin is volume-mounted from ./dist and loaded unsigned:
+#   GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=emreatayy-oracle-datasource
+# Build it first with `mage -v` (or `npx grafana-sdk mage -v`).
+#
+# Ports (all bound to 127.0.0.1): grafana dev :3000, grafana12 :3001,
+# grafana13 :3002, prometheus :9090, oracle :1523-1526 (the verification
+# harness in verification/ owns :1521/:1522).
+#
+# NOTE: gvenzl images auto-create SYSTEM with ORACLE_PASSWORD; the PDB
+# service name is XEPDB1. amd64-only images run under Rosetta on Apple
+# Silicon (slow first start).
+
+services:
+  # Dev server loop (create-plugin template): builds a Grafana image and runs
+  # webpack + grafana via supervisord. Used by `npm run server`.
+  grafana:
+    extends:
+      file: .config/docker-compose-base.yaml
+      service: grafana
+
+  # ---- Version matrix (report §17.1) ----
+  grafana12:
+    image: grafana/grafana-oss:12.4.0
+    container_name: f0_grafana12
+    profiles: ["grafana12"]
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment:
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: emreatayy-oracle-datasource
+    volumes:
+      - ./dist:/var/lib/grafana/plugins/emreatayy-oracle-datasource
+      - ./provisioning:/etc/grafana/provisioning
+
+  grafana13:
+    # Grafana stopped publishing OSS images after 13.0.2; 13.1.x is
+    # enterprise-only on Docker Hub (same OSS binary, free to pull — the
+    # create-plugin dev service already uses it by default).
+    image: grafana/grafana-enterprise:13.1.0
+    container_name: f0_grafana13
+    profiles: ["grafana13"]
+    ports:
+      - "127.0.0.1:3002:3000"
+    environment:
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: emreatayy-oracle-datasource
+    volumes:
+      - ./dist:/var/lib/grafana/plugins/emreatayy-oracle-datasource
+      - ./provisioning:/etc/grafana/provisioning
+
+  oracle18:
+    image: gvenzl/oracle-xe:18c-slim
+    container_name: f0_oracle18
+    profiles: ["oracle18"]
+    ports:
+      - "127.0.0.1:1523:1521"
+    environment:
+      ORACLE_PASSWORD: verif_password
+    healthcheck:
+      test: ["CMD", "/opt/oracle/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
+  oracle21:
+    image: gvenzl/oracle-xe:21-slim
+    container_name: f0_oracle21
+    profiles: ["oracle21"]
+    ports:
+      - "127.0.0.1:1524:1521"
+    environment:
+      ORACLE_PASSWORD: verif_password
+    healthcheck:
+      test: ["CMD", "/opt/oracle/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
+  oracle23:
+    image: gvenzl/oracle-xe:23c-slim
+    container_name: f0_oracle23
+    profiles: ["oracle23"]
+    ports:
+      - "127.0.0.1:1525:1521"
+    environment:
+      ORACLE_PASSWORD: verif_password
+    healthcheck:
+      test: ["CMD", "/opt/oracle/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
+  oracle_tr:
+    image: gvenzl/oracle-xe:21-slim
+    container_name: f0_oracle_tr
+    profiles: ["oracle_tr"]
+    ports:
+      - "127.0.0.1:1526:1521"
+    environment:
+      ORACLE_PASSWORD: verif_password
+      ORACLE_CHARACTERSET: WE8ISO8859P9
+    healthcheck:
+      test: ["CMD", "/opt/oracle/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: f0_prometheus
+    profiles: ["prom"]
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./devenv/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  exporter:
+    # Oracle metrics exporter (report §9 / Option D) — point it at a database
+    # in the same compose network (see devenv/prometheus.yml scrape config).
+    image: ghcr.io/oracle/oracle-db-appdev-monitoring:latest
+    container_name: f0_exporter
+    profiles: ["prom"]
+    environment:
+      ODS_USER: system
+      ODS_PASSWORD: verif_password
+      ODS_HOST: oracle21
+      ODS_PORT: "1521"
+      ODS_SERVICE: XEPDB1
+    depends_on:
+      - oracle21

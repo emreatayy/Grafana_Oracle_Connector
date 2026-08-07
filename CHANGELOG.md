@@ -23,9 +23,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Release & packaging plan** (`docs/release-and-packaging.md`) — the
   distribution model for a Grafana datasource plugin: signed plugin archive,
   GitHub Release, Grafana catalog, versioning, and the planned CI/release
-  workflows (created in F0/F13).
+  workflows (created in F13).
 - **Community health files** — `CONTRIBUTING.md`, `SECURITY.md`,
   `CODE_OF_CONDUCT.md`, and GitHub issue/PR templates.
+- **F0 — plugin scaffold** — datasource plugin generated with
+  `@grafana/create-plugin` at the repo root (plugin ID
+  `emreatayy-oracle-datasource`):
+  - Go backend (`pkg/`, grafana-plugin-sdk-go **v0.296.1**) + TypeScript/React
+    frontend (`src/`, @grafana/ui **13.1.0**); go-ora **v2.9.0** pinned.
+  - `plugin.json`: `alerting: true`, `annotations: true` (ADR-12),
+    `grafanaDependency >=12.3.0`.
+  - §17.1 dev matrix `docker-compose.yaml` (profiles `grafana12`/`grafana13`/
+    `oracle18`/`oracle21`/`oracle23`/`oracle_tr`/`prom`) + `devenv/prometheus.yml`.
+  - F0 unit CI workflow (`.github/workflows/ci.yml`): Go vet/test + golangci-lint
+    + Node typecheck/lint/Jest + full `mage` build, on push to `main` and PRs.
+  - **Check #3 closed** — the built plugin loads unsigned on Grafana **12.4.0**
+    and **13.1.0**, the health "Test" returns SUCCESS, and the alert-rule API
+    accepts a query against it (§21 row 3).
 
 ### Verified (empirically, 2026-08-07)
 

@@ -7,13 +7,20 @@ dist/
 coverage/
 *.log
 npm-debug.log*
+.eslintcache
+
+# Playwright e2e artifacts
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
 
 # Go backend / Grafana plugin build
 bin/
 *.exe
 *.test
 gpx_*
-dist/
 *.tar.gz
 
 # Mage (Grafana plugin build tool)
