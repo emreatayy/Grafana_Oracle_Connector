@@ -37,3 +37,38 @@ the plugin's design assumptions are locked in.
    can be overridden; the password comes from `ORACLE_PASSWORD` (or `--pass`).
 
 The probe prints a per-check verdict and exits non-zero if any check fails.
+
+## Grafana plugin check (F0 + F5 seed, report §17.2 Workflow 3 API subset)
+
+`grafana_plugin_check.py` verifies a **built** plugin against a running Grafana
+from the repo-root matrix (report §17.1) — plugin loads, health "Test",
+end-to-end query path, and alert-rule acceptance. This is the API-level half of
+the future e2e workflow; the Playwright UI half lands with F5.
+
+```sh
+# build the plugin first (both halves write to dist/)
+mage -v && npm run build
+
+# start a matrix Grafana with the plugin volume-mounted (admin/admin, pinned)
+docker compose --profile grafana12 up -d grafana12   # :3001
+docker compose --profile grafana13 up -d grafana13   # :3002
+
+# run the check against each
+./grafana_plugin_check.py --url http://127.0.0.1:3001
+./grafana_plugin_check.py --url http://127.0.0.1:3002
+```
+
+Checks performed (idempotent — the test alert rule + folder are deleted after):
+
+| # | Check | API call |
+|---|---|---|
+| 1 | Grafana reachable | `GET /api/health` |
+| 2 | Plugin loaded + enabled | `GET /api/plugins/<id>` |
+| 3 | Provisioned datasource exists | `GET /api/datasources/name/<name>` |
+| 4 | Health "Test" succeeds | `POST /api/datasources/uid/<uid>/health` |
+| 5 | Query path returns a frame | `POST /api/ds/query` |
+| 6 | Alerting flag honored | `POST /api/v1/provisioning/alert-rules` |
+
+Requires Python 3 stdlib only; `--url/--user/--password/--plugin-id/
+--datasource-name/--timeout` are overridable and environment variables
+`GRAFANA_URL/GRAFANA_USER/GRAFANA_PASSWORD` are honored.

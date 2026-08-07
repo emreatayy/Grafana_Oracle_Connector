@@ -267,6 +267,14 @@ npm run server   # terminal 2 — dev Grafana + backend
 Unit checks (mirror CI): `npm run typecheck && npm run lint && npm run test:ci`
 and `mage test` for the Go backend. Full phase-by-phase detail: report §18.
 
+Verify the built plugin against a running matrix Grafana (plugin load, health
+"Test", query path, alert-rule acceptance — 6 checks):
+
+```sh
+./verification/grafana_plugin_check.py --url http://127.0.0.1:3001   # -> 6/6 passed
+./verification/grafana_plugin_check.py --url http://127.0.0.1:3002
+```
+
 ---
 
 ## Documentation

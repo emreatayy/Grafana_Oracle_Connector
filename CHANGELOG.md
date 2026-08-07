@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workflows (created in F13).
 - **Community health files** — `CONTRIBUTING.md`, `SECURITY.md`,
   `CODE_OF_CONDUCT.md`, and GitHub issue/PR templates.
+- **Grafana plugin check** (`verification/grafana_plugin_check.py`) — a
+  repeatable API-level script (report §17.2 Workflow 3 subset) that verifies a
+  built plugin against a running matrix Grafana: plugin load, health "Test",
+  query path, and alert-rule acceptance (F5 e2e seed).
 - **F0 — plugin scaffold** — datasource plugin generated with
   `@grafana/create-plugin` at the repo root (plugin ID
   `emreatayy-oracle-datasource`):
