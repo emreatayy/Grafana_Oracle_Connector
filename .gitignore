@@ -1,0 +1,26 @@
+# Claude Code yerel ayarları (makineye özel, repo'ya girmez)
+.claude/settings.local.json
+
+# Node.js / frontend build
+node_modules/
+dist/
+coverage/
+*.log
+npm-debug.log*
+
+# Go backend / Grafana plugin build
+bin/
+*.exe
+*.test
+gpx_*
+dist/
+*.tar.gz
+
+# Mage (Grafana plugin build tool)
+mage-output.txt
+
+# Editör / işletim sistemi
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
