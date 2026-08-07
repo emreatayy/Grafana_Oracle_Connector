@@ -1,5 +1,5 @@
-import { DataSourceInstanceSettings, CoreApp, ScopedVars } from '@grafana/data';
-import { DataSourceWithBackend, getTemplateSrv } from '@grafana/runtime';
+import { DataSourceInstanceSettings, CoreApp } from '@grafana/data';
+import { DataSourceWithBackend } from '@grafana/runtime';
 
 import { MyQuery, MyDataSourceOptions, DEFAULT_QUERY } from './types';
 
@@ -12,15 +12,9 @@ export class DataSource extends DataSourceWithBackend<MyQuery, MyDataSourceOptio
     return DEFAULT_QUERY;
   }
 
-  applyTemplateVariables(query: MyQuery, scopedVars: ScopedVars) {
-    return {
-      ...query,
-      queryText: getTemplateSrv().replace(query.queryText, scopedVars),
-    };
-  }
-
+  // Interpolation happens on the backend (ADR-2): the frontend sends raw SQL
+  // and the plugin expands macros/variables server-side (report §8).
   filterQuery(query: MyQuery): boolean {
-    // if no query has been provided, prevent the query from being executed
-    return !!query.queryText;
+    return !!query.sql && query.sql.trim().length > 0;
   }
 }

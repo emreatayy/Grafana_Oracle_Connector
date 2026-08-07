@@ -2,115 +2,150 @@ package plugin
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
-	"github.com/grafana/grafana-plugin-sdk-go/data"
+	go_ora "github.com/sijms/go-ora/v2"
+
 	"github.com/emreatayy/oracle-datasource/pkg/models"
+	"github.com/emreatayy/oracle-datasource/pkg/oracle"
 )
 
-// Make sure Datasource implements required interfaces. This is important to do
-// since otherwise we will only get a not implemented error response from plugin in
-// runtime. In this example datasource instance implements backend.QueryDataHandler,
-// backend.CheckHealthHandler interfaces. Plugin should not implement all these
-// interfaces - only those which are required for a particular task.
+// healthTimeout bounds the whole health-check connect (report §13).
+const healthTimeout = 5 * time.Second
+
+// Make sure Datasource implements the required interfaces.
 var (
 	_ backend.QueryDataHandler      = (*Datasource)(nil)
 	_ backend.CheckHealthHandler    = (*Datasource)(nil)
 	_ instancemgmt.InstanceDisposer = (*Datasource)(nil)
 )
 
-// NewDatasource creates a new datasource instance.
-func NewDatasource(_ context.Context, _ backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
-	return &Datasource{}, nil
-}
-
-// Datasource is an example datasource which can respond to data queries, reports
-// its health and has streaming skills.
-type Datasource struct{}
-
-// Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
-// created. As soon as datasource settings change detected by SDK old datasource instance will
-// be disposed and a new one will be created using NewSampleDatasource factory function.
-func (d *Datasource) Dispose() {
-	// Clean up datasource instance resources.
-}
-
-// QueryData handles multiple queries and returns multiple responses.
-// req contains the queries []DataQuery (where each query contains RefID as a unique identifier).
-// The QueryDataResponse contains a map of RefID to the response for each query, and each response
-// contains Frames ([]*Frame).
-func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
-	// create response struct
-	response := backend.NewQueryDataResponse()
-
-	// loop over queries and execute them individually.
-	for _, q := range req.Queries {
-		res := d.query(ctx, req.PluginContext, q)
-
-		// save the response in a hashmap
-		// based on with RefID as identifier
-		response.Responses[q.RefID] = res
+// NewDatasource creates a datasource instance. It parses settings and prepares
+// the connection pool but does not connect eagerly — a down database must not
+// break instance construction; CheckHealth surfaces the error.
+func NewDatasource(_ context.Context, s backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
+	settings, err := models.LoadPluginSettings(s)
+	if err != nil {
+		return nil, fmt.Errorf("could not load datasource settings: %w", err)
+	}
+	dsn, err := oracle.BuildDSN(settings)
+	if err != nil {
+		return nil, err
 	}
 
+	// Use go_ora.NewConnector (a fresh driver per connector) instead of the
+	// registered "oracle" driver: the default driver is a package-level
+	// singleton whose session-param map would be shared across datasource
+	// instances. NewConnector allocates a private OracleDriver, so session
+	// parameters stay isolated per datasource (report §5.4).
+	db := sql.OpenDB(go_ora.NewConnector(dsn))
+	db.SetMaxOpenConns(settings.MaxOpenConns)
+	db.SetMaxIdleConns(settings.MaxIdleConns)
+	db.SetConnMaxLifetime(time.Duration(settings.ConnMaxLifetimeSec) * time.Second)
+
+	return &Datasource{
+		settings: settings,
+		db:       db,
+		session:  oracle.SessionParams(settings.SessionTimeZone),
+	}, nil
+}
+
+// Datasource is the Oracle datasource instance.
+type Datasource struct {
+	settings *models.PluginSettings
+	db       *sql.DB
+	session  []oracle.SessionParam
+
+	// mu guards ready and db; ensureReady holds it through the first connect
+	// so concurrent queries cannot race the session setup.
+	mu    sync.Mutex
+	ready bool
+}
+
+// Dispose closes the connection pool. The SDK calls it whenever the datasource
+// configuration changes, immediately before a new instance is created with the
+// new settings (report §18 F1 DoD).
+func (d *Datasource) Dispose() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.db != nil {
+		_ = d.db.Close()
+		d.db = nil
+		d.ready = false
+	}
+}
+
+// ensureReady pings the database and applies session parameters once. It is
+// retry-safe: a failed attempt (database briefly down) is retried on the next
+// call because ready is only set after success.
+func (d *Datasource) ensureReady(ctx context.Context) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.db == nil {
+		return fmt.Errorf("datasource has been disposed")
+	}
+	if d.ready {
+		return nil
+	}
+	if err := d.db.PingContext(ctx); err != nil {
+		return err
+	}
+	if err := oracle.ApplySession(d.db, d.session); err != nil {
+		return err
+	}
+	d.ready = true
+	return nil
+}
+
+// QueryData executes each query and returns one response per RefID.
+func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
+	response := backend.NewQueryDataResponse()
+	for _, q := range req.Queries {
+		response.Responses[q.RefID] = d.query(ctx, q)
+	}
 	return response, nil
 }
 
-type queryModel struct{}
+// CheckHealth implements the datasource "Test" button: connect with a 5s bound
+// and report the Oracle version banner (report §5.2, §13).
+func (d *Datasource) CheckHealth(_ context.Context, _ *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), healthTimeout)
+	defer cancel()
 
-func (d *Datasource) query(_ context.Context, pCtx backend.PluginContext, query backend.DataQuery) backend.DataResponse {
-	var response backend.DataResponse
-
-	// Unmarshal the JSON into our queryModel.
-	var qm queryModel
-
-	err := json.Unmarshal(query.JSON, &qm)
-	if err != nil {
-		return backend.ErrDataResponse(backend.StatusBadRequest, fmt.Sprintf("json unmarshal: %v", err.Error()))
+	if err := d.ensureReady(ctx); err != nil {
+		return d.healthError(err), nil
 	}
 
-	// create data frame response.
-	// For an overview on data frames and how grafana handles them:
-	// https://grafana.com/developers/plugin-tools/introduction/data-frames
-	frame := data.NewFrame("response")
-
-	// add fields.
-	frame.Fields = append(frame.Fields,
-		data.NewField("time", nil, []time.Time{query.TimeRange.From, query.TimeRange.To}),
-		data.NewField("values", nil, []int64{10, 20}),
-	)
-
-	// add the frames to the response.
-	response.Frames = append(response.Frames, frame)
-
-	return response
-}
-
-// CheckHealth handles health checks sent from Grafana to the plugin.
-// The main use case for these health checks is the test button on the
-// datasource configuration page which allows users to verify that
-// a datasource is working as expected.
-func (d *Datasource) CheckHealth(_ context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
-	res := &backend.CheckHealthResult{}
-	config, err := models.LoadPluginSettings(*req.PluginContext.DataSourceInstanceSettings)
-
-	if err != nil {
-		res.Status = backend.HealthStatusError
-		res.Message = "Unable to load settings"
-		return res, nil
-	}
-
-	if config.Secrets.ApiKey == "" {
-		res.Status = backend.HealthStatusError
-		res.Message = "API key is missing"
-		return res, nil
+	var banner string
+	if err := d.db.QueryRowContext(ctx, "SELECT BANNER FROM V$VERSION WHERE ROWNUM = 1").Scan(&banner); err != nil {
+		return d.healthError(err), nil
 	}
 
 	return &backend.CheckHealthResult{
 		Status:  backend.HealthStatusOk,
-		Message: "Data source is working",
+		Message: strings.TrimSpace(banner),
 	}, nil
+}
+
+// healthError formats a health failure without leaking credentials.
+func (d *Datasource) healthError(err error) *backend.CheckHealthResult {
+	return &backend.CheckHealthResult{
+		Status:  backend.HealthStatusError,
+		Message: d.safeMessage(err),
+	}
+}
+
+// safeMessage formats an error and strips any password/credential content.
+func (d *Datasource) safeMessage(err error) string {
+	msg := oracle.FormatError(err)
+	if d.settings != nil {
+		msg = oracle.Redact(msg, d.settings.Password())
+	}
+	return msg
 }

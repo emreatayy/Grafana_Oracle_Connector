@@ -1,5 +1,5 @@
 import React, { ChangeEvent } from 'react';
-import { InlineField, Input, Stack } from '@grafana/ui';
+import { Button, Field, Stack, TextArea } from '@grafana/ui';
 import { QueryEditorProps } from '@grafana/data';
 import { DataSource } from '../datasource';
 import { MyDataSourceOptions, MyQuery } from '../types';
@@ -7,39 +7,28 @@ import { MyDataSourceOptions, MyQuery } from '../types';
 type Props = QueryEditorProps<DataSource, MyQuery, MyDataSourceOptions>;
 
 export function QueryEditor({ query, onChange, onRunQuery }: Props) {
-  const onQueryTextChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onChange({ ...query, queryText: event.target.value });
+  const onSQLChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    onChange({ ...query, sql: event.target.value });
   };
-
-  const onConstantChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onChange({ ...query, constant: parseFloat(event.target.value) });
-    // executes the query
-    onRunQuery();
-  };
-
-  const { queryText, constant } = query;
 
   return (
-    <Stack gap={0}>
-      <InlineField label="Constant">
-        <Input
-          id="query-editor-constant"
-          onChange={onConstantChange}
-          value={constant}
-          width={8}
-          type="number"
-          step="0.1"
+    <Stack direction="column" gap={1}>
+      <Field label="SQL" description="Read-only: only SELECT and WITH statements are allowed">
+        <TextArea
+          id="query-editor-sql"
+          value={query.sql || ''}
+          onChange={onSQLChange}
+          onBlur={onRunQuery}
+          placeholder="SELECT * FROM DUAL"
+          rows={8}
+          style={{ fontFamily: 'var(--font-monospace)' }}
         />
-      </InlineField>
-      <InlineField label="Query Text" labelWidth={16} tooltip="Not used yet">
-        <Input
-          id="query-editor-query-text"
-          onChange={onQueryTextChange}
-          value={queryText || ''}
-          required
-          placeholder="Enter a query"
-        />
-      </InlineField>
+      </Field>
+      <div>
+        <Button size="sm" icon="play" variant="secondary" onClick={onRunQuery}>
+          Run query
+        </Button>
+      </div>
     </Stack>
   );
 }

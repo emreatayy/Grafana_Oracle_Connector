@@ -3,7 +3,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Grafana](https://img.shields.io/badge/Grafana-%E2%89%A512.3-F46800.svg)](https://grafana.com)
 [![Oracle](https://img.shields.io/badge/Oracle-%E2%89%A512c-red.svg)](https://www.oracle.com/database/)
-[![Status](https://img.shields.io/badge/status-F0%20done-brightgreen.svg)](#status)
+[![Status](https://img.shields.io/badge/status-F1%20done-brightgreen.svg)](#status)
 [![CI](https://github.com/emreatayy/Grafana_Oracle_Connector/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
 A **Grafana data source plugin for Oracle Database** with an optional
@@ -46,7 +46,7 @@ procedures) — all driven from the query editor.
 |---|---|
 | Design | ✅ Complete — `docs/project-report.md` (v2) |
 | Empirical verification | ✅ **8 of 8** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1) — see `verification/` |
-| Implementation | ✅ **F0 done** (scaffold, version matrix, dev environment, CI green) — next: F1 (connection core) |
+| Implementation | ✅ **F1 done** (Oracle connection core: pooled connection, session timezone pinning, ctx-cancelled queries, read-only guard, ORA error parsing) — next: F2 (type mapping) |
 
 The report's riskiest assumptions were validated empirically before any code
 was written, which produced two design corrections early:
@@ -181,6 +181,7 @@ Pinned dependencies (pinned at F0, 2026-08-07):
 │   └── components/ module.ts datasource.ts types.ts
 ├── pkg/                      # Backend (Go, plugin SDK)
 │   ├── plugin/               # Datasource, health check, query path
+│   ├── oracle/               # DSN building, ORA error parsing, session params
 │   └── models/               # Config/query models
 ├── .config/                  # create-plugin build/dev config (webpack, docker base)
 ├── docker-compose.yaml       # Dev loop + §17.1 version matrix (profiles)
@@ -197,6 +198,12 @@ Pinned dependencies (pinned at F0, 2026-08-07):
 > **F0 (2026-08-07):** scaffolded with `@grafana/create-plugin` at the repo
 > root — `src/` + `pkg/` + `plugin.json` + `Magefile.go` + the §17.1
 > `docker-compose.yaml` matrix and the F0 unit CI workflow.
+>
+> **F1 (2026-08-08):** real Oracle connection core in `pkg/oracle` + `pkg/plugin`
+> — pooled `sql.DB` per datasource instance, session `TIME_ZONE` pinned to UTC,
+> query timeout + `ctx` cancellation (verified server-side cancel on Oracle 21c),
+> read-only `SELECT`/`WITH` guard, ORA-#### error parsing with password
+> redaction, and the F1 config/query editors in `src/`.
 
 ---
 
@@ -289,10 +296,11 @@ Verify the built plugin against a running matrix Grafana (plugin load, health
 
 ## Roadmap
 
-16 implementation phases in 4 waves (~52–54 person-days). **F0 is done**
-(scaffold, version matrix, dev environment, CI green). The critical path going
-forward is **F2 → F3 → F5** (typed time series + alerting) and in parallel
-**F6** (Prometheus proxy).
+16 implementation phases in 4 waves (~52–54 person-days). **F1 is done**
+(scaffold + Oracle connection core: pooled connection, session timezone
+pinning, ctx-cancelled queries, read-only guard, ORA error parsing). The
+critical path going forward is **F2 → F3 → F5** (typed time series + alerting)
+and in parallel **F6** (Prometheus proxy).
 
 | Wave | Phases | Scope | Effort |
 |---|---|---|---|

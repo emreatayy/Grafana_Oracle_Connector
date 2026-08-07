@@ -753,6 +753,7 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 - ConnString/fields/SID parsing; pool parameters; `context` cancellation; query timeout; read-only guard.
 - Error-parsing core (ORA pattern).
 - **DoD:** Config changes dispose the instance; a long query is cancelled when the panel closes (integration test).
+- **Status (2026-08-08):** ✅ **done.** `pkg/oracle` (DSN, ORA error parsing, session params) + pooled `sql.DB` via per-instance `go_ora.NewConnector` (avoids the package-singleton `sessionParam` leak across datasources). Session `TIME_ZONE` pinned UTC through `AddSessionParam` (go-ora hardcodes the host offset otherwise). Read-only guard passes only `SELECT`/`WITH` (comments skipped). **Verified on real Oracle 21c:** health banner, 6/6 matrix checks on Grafana 12.4.0 + 13.1.0, and the DoD — a heavy `CONNECT BY` query returns ORA-01013 within ~360 ms of ctx cancel (panel close). Integration suite `ORACLE_TEST_DSN=… go test ./pkg/plugin/ -run Integration` all green; unit + lint clean. NUMBER still arrives as strings (#533) — the typed mapper is F2.
 
 **F2 — Type mapping + frame generation** · 5 pg (critical path)
 - Pure `convert` package (6.3); the 6.1 map; the 7 algorithm; wide/long; maxSeries; duplicate columns; empty frame.

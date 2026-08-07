@@ -2,7 +2,10 @@ module github.com/emreatayy/oracle-datasource
 
 go 1.26.5
 
-require github.com/grafana/grafana-plugin-sdk-go v0.296.1
+require (
+	github.com/grafana/grafana-plugin-sdk-go v0.296.1
+	github.com/sijms/go-ora/v2 v2.9.0
+)
 
 require (
 	github.com/BurntSushi/toml v1.6.0 // indirect
@@ -56,7 +59,6 @@ require (
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
-	github.com/sijms/go-ora/v2 v2.9.0 // indirect
 	github.com/unknwon/bra v0.0.0-20200517080246-1e3013ecaff8 // indirect
 	github.com/unknwon/com v1.0.1 // indirect
 	github.com/unknwon/log v0.0.0-20150304194804-e617c87089d3 // indirect

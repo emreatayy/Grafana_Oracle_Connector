@@ -127,14 +127,15 @@ class GrafanaCheck:
     def check_query(self, ds_uid: str) -> bool:
         if not ds_uid:
             return log(False, "query check skipped (no datasource uid)")
+        # /api/ds/query takes query fields FLATTENED at the top level of each
+        # query object (the "model" nesting is only used by the alerting API).
         body = {
             "from": "now-1h",
             "to": "now",
             "queries": [{
                 "refId": "A",
+                "sql": "SELECT 1 AS value FROM DUAL",
                 "datasource": {"type": self.plugin_id, "uid": ds_uid},
-                "queryType": "query",
-                "model": {"refId": "A", "constant": 6.5},
             }],
         }
         status, payload = self.api("POST", "/api/ds/query", body)
