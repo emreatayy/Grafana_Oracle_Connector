@@ -1,4 +1,4 @@
-# Claude Code yerel ayarları (makineye özel, repo'ya girmez)
+# Claude Code local settings (machine-specific, not committed)
 .claude/settings.local.json
 
 # Node.js / frontend build
@@ -19,7 +19,7 @@ dist/
 # Mage (Grafana plugin build tool)
 mage-output.txt
 
-# Editör / işletim sistemi
+# Editor / OS
 .vscode/
 .idea/
 .DS_Store

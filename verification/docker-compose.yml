@@ -1,0 +1,51 @@
+# Verification harness services (§21 empirical checks).
+#
+# Usage:
+#   docker compose --profile oracle21 up -d      # checks 1,2,4,8 (UTF-8 DB)
+#   docker compose --profile oracle_tr up -d     # check 7 (Turkish WE8ISO8859P9 DB)
+#   docker compose --profile grafana up -d       # check 5 (alert maxDataPoints, e2e)
+#
+# Wait for the Oracle healthcheck to report healthy, then run the probe
+# (see README.md). Ports are bound to 127.0.0.1 only.
+#
+# NOTE: gvenzl images auto-create SYSTEM with ORACLE_PASSWORD; the PDB
+# service name is XEPDB1. ORACLE_CHARACTERSET is honored on first init.
+
+services:
+  oracle21:
+    image: gvenzl/oracle-xe:21-slim
+    container_name: verif_oracle21
+    profiles: ["oracle21"]
+    ports:
+      - "127.0.0.1:1521:1521"
+    environment:
+      ORACLE_PASSWORD: verif_password
+    healthcheck:
+      test: ["CMD", "/opt/oracle/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+
+  oracle_tr:
+    image: gvenzl/oracle-xe:21-slim
+    container_name: verif_oracle_tr
+    profiles: ["oracle_tr"]
+    ports:
+      - "127.0.0.1:1522:1521"
+    environment:
+      ORACLE_PASSWORD: verif_password
+      ORACLE_CHARACTERSET: WE8ISO8859P9
+    healthcheck:
+      test: ["CMD", "/opt/oracle/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+
+  grafana12:
+    image: grafana/grafana-oss:12.4.0
+    container_name: verif_grafana12
+    profiles: ["grafana"]
+    ports:
+      - "127.0.0.1:3000:3000"
