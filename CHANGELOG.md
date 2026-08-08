@@ -220,6 +220,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   e2e specs: the SQL editor renders, the mode tabs switch and are stored per
   query, and the backend rejects a saved `mode:"prometheus"` query with a
   clean 400 before touching Oracle.
+- The datasource settings live under a **different property per host Grafana**:
+  `instanceSettings` on `DataSourceApi` (≤ 12.x) vs `datasourceInstanceSettings`
+  on `DataSourceWithBackend` (13.x). The plugin floor is 12.3, so the query
+  editor reads both defensively (the F4 e2e run covered only 13.1 and missed
+  the 12.4 crash; the query-editor spec now also passes on 12.4).
+
+### Fixed
+
+- Query editor crashed on Grafana **12.4** with
+  `TypeError: undefined is not an object (evaluating 'e.datasource.datasourceInstanceSettings.jsonData')`
+  — `datasourceInstanceSettings` exists only on the 13.x
+  `DataSourceWithBackend`; the editor now falls back to the ≤ 12.x
+  `instanceSettings` property. Verified: query-editor e2e 5/5 on **both**
+  12.4 (:3001) and 13.1 (:3002), full e2e 8/8 on 12.4, plugin check 6/6 on both.
 
 ### Changed
 

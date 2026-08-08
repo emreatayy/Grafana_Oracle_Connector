@@ -1,6 +1,6 @@
 import React from 'react';
 import { Alert, Button, Select, Stack, Tab, TabsBar, TabContent } from '@grafana/ui';
-import { QueryEditorProps, SelectableValue } from '@grafana/data';
+import { DataSourceInstanceSettings, QueryEditorProps, SelectableValue } from '@grafana/data';
 import { EditorField, EditorRow, SQLEditor } from '@grafana/plugin-ui';
 
 import { DataSource } from '../datasource';
@@ -25,10 +25,13 @@ export function QueryEditor(props: Props) {
   const { query, onChange, onRunQuery } = props;
 
   // The editor mode is stored per query and defaults to the datasource's
-  // configured default (report §14.1).
-  // DataSourceWithBackend exposes the settings as `datasourceInstanceSettings`
-  // (G13 moved instanceSettings off DataSourceApi).
-  const mode: QueryMode = query.mode ?? props.datasource.datasourceInstanceSettings.jsonData.defaultMode ?? 'sql';
+  // configured default (report §14.1). The settings live under a different
+  // property depending on the host Grafana: `instanceSettings` on DataSourceApi
+  // (≤ 12.x) vs `datasourceInstanceSettings` on DataSourceWithBackend (13.x).
+  // The plugin floor is 12.3, so read both defensively.
+  const ds = props.datasource as DataSource & { instanceSettings?: DataSourceInstanceSettings<MyDataSourceOptions> };
+  const settings = props.datasource.datasourceInstanceSettings ?? ds.instanceSettings;
+  const mode: QueryMode = query.mode ?? settings?.jsonData?.defaultMode ?? 'sql';
 
   const onModeChange = (next: QueryMode) => {
     if (next !== mode) {
