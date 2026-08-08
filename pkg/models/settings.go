@@ -3,6 +3,7 @@ package models
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 )
@@ -46,6 +47,24 @@ type OracleSettings struct {
 	// precision>15): "" = per-format default (string in table, float in
 	// time_series), "string", or "float".
 	LargeNumberMode string `json:"largeNumberMode"`
+	// NumericVariables lists dashboard variable names that may expand unquoted
+	// in SQL (report §8.2). It is a hint, not a trust grant: the backend still
+	// requires the value to match a strict numeric literal before emitting it
+	// bare.
+	NumericVariables []string `json:"numericVariables"`
+}
+
+// NumericVariableSet returns the configured numeric variable names as a set for
+// O(1) lookup during interpolation (§8.2).
+func (s *OracleSettings) NumericVariableSet() map[string]bool {
+	set := make(map[string]bool, len(s.NumericVariables))
+	for _, n := range s.NumericVariables {
+		n = strings.TrimSpace(n)
+		if n != "" {
+			set[n] = true
+		}
+	}
+	return set
 }
 
 // SecretPluginSettings holds decrypted secure fields (never sent to the

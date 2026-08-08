@@ -217,18 +217,10 @@ func ensureF2Table(t *testing.T, ds *Datasource, ctx context.Context) {
 	t.Cleanup(func() { _, _ = ds.db.ExecContext(ctx, `DROP TABLE gox_f2`) })
 }
 
-// TestIntegration_TypedColumns is the F2 DoD: a real Oracle result set must
-// come back as a typed frame — int64/float64/string/time fields, NULL preserved,
-// a large NUMBER kept at full precision in table format, CLOB read as text, and
-// the §7 time-series rules applied (duplicate time kept, NULL time skipped).
-func TestIntegration_TypedColumns(t *testing.T) {
-	ds := newIntegrationDatasource(t)
-	// Register dispose as a cleanup (not defer): t.Cleanup runs LIFO, so
-	// ensureF2Table's DROP cleanup runs before the pool is closed.
-	t.Cleanup(ds.Dispose)
-	ctx := context.Background()
-	ensureF2Table(t, ds, ctx)
-
+// seedF2Rows inserts the four gox_f2 fixture rows (ids 42, 7, 8, 9) used by the
+// F2 typed-column and F3 macro integration tests.
+func seedF2Rows(t *testing.T, ds *Datasource, ctx context.Context) {
+	t.Helper()
 	at := time.Date(2026, 8, 8, 9, 30, 0, 0, time.UTC)
 	insert := func(id int64, ratio, label, big, when, notes any) {
 		t.Helper()
@@ -242,6 +234,41 @@ func TestIntegration_TypedColumns(t *testing.T) {
 	insert(7, nil, nil, nil, nil, nil)                                 // all-NULL row
 	insert(8, 1.0, "web-2", "2", at, nil)                               // duplicate time with id=42
 	insert(9, 2.0, "web-3", "3", nil, nil)                              // NULL time → skipped in ts
+}
+
+// frameInt64s reads the first field of a frame as int64 values in row order.
+// Computed expressions (e.g. FLOOR(id/10)*10) are classified Prec==0 → float
+// (§6.2), so both int64 and float64 cells are accepted.
+func frameInt64s(t *testing.T, frame *data.Frame) []int64 {
+	t.Helper()
+	ids := make([]int64, 0, frame.Rows())
+	field := frame.Fields[0]
+	for i := 0; i < frame.Rows(); i++ {
+		switch v := field.At(i).(type) {
+		case *int64:
+			ids = append(ids, *v)
+		case *float64:
+			ids = append(ids, int64(*v))
+		default:
+			t.Errorf("row %d: unexpected cell type %T", i, v)
+		}
+	}
+	return ids
+}
+
+// TestIntegration_TypedColumns is the F2 DoD: a real Oracle result set must
+// come back as a typed frame — int64/float64/string/time fields, NULL preserved,
+// a large NUMBER kept at full precision in table format, CLOB read as text, and
+// the §7 time-series rules applied (duplicate time kept, NULL time skipped).
+func TestIntegration_TypedColumns(t *testing.T) {
+	ds := newIntegrationDatasource(t)
+	// Register dispose as a cleanup (not defer): t.Cleanup runs LIFO, so
+	// ensureF2Table's DROP cleanup runs before the pool is closed.
+	t.Cleanup(ds.Dispose)
+	ctx := context.Background()
+	ensureF2Table(t, ds, ctx)
+
+	seedF2Rows(t, ds, ctx)
 
 	t.Run("table typed", func(t *testing.T) {
 		sql := "SELECT id, ratio, label, big, at, notes FROM gox_f2 ORDER BY id"
@@ -307,6 +334,94 @@ func TestIntegration_TypedColumns(t *testing.T) {
 		// `at` → skipped (§7.3.6/7.3.7).
 		if frame.Rows() != 2 {
 			t.Errorf("rows = %d, want 2 (duplicate time kept, NULL-time rows skipped)", frame.Rows())
+		}
+	})
+}
+
+// TestIntegration_Macros is the F3 DoD end-to-end: $__timeFilter + ${var:csv}
+// expand on the real backend, an empty selection becomes IN (NULL), and
+// $__unixEpochGroup buckets an epoch column. It also asserts ExecutedQueryString
+// carries the raw (uninterpolated) SQL and that an unresolved ${var} errors
+// without touching the DB.
+func TestIntegration_Macros(t *testing.T) {
+	ds := newIntegrationDatasource(t)
+	t.Cleanup(ds.Dispose)
+	ctx := context.Background()
+	ensureF2Table(t, ds, ctx)
+	seedF2Rows(t, ds, ctx)
+
+	tr := backend.TimeRange{
+		From: time.Date(2026, 8, 8, 9, 0, 0, 0, time.UTC),
+		To:   time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC),
+	}
+	query := func(raw string, extra string) (*data.Frame, error) {
+		t.Helper()
+		resp := ds.query(ctx, backend.DataQuery{
+			RefID:        "A",
+			TimeRange:    tr,
+			Interval:     time.Minute,
+			MaxDataPoints: 100,
+			JSON:         json.RawMessage(`{"sql":` + mustJSON(raw) + extra + `}`),
+		})
+		if resp.Error != nil {
+			return nil, resp.Error
+		}
+		if len(resp.Frames) != 1 {
+			t.Fatalf("frames = %d, want 1", len(resp.Frames))
+		}
+		return resp.Frames[0], nil
+	}
+
+	// gox_f2: ids 42 and 8 are at 09:30 (in range); ids 7 and 9 have NULL at.
+	raw := "SELECT id FROM gox_f2 WHERE $__timeFilter(at) AND label IN (${host:csv}) ORDER BY id"
+
+	t.Run("single host", func(t *testing.T) {
+		frame, err := query(raw, `,"scopedVars":{"host":["web-1"]}`)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		if got := frameInt64s(t, frame); len(got) != 1 || got[0] != 42 {
+			t.Errorf("ids = %v, want [42]", got)
+		}
+		if frame.Meta == nil || frame.Meta.ExecutedQueryString != raw {
+			t.Errorf("meta = %+v, want ExecutedQueryString == raw SQL", frame.Meta)
+		}
+	})
+
+	t.Run("multi host", func(t *testing.T) {
+		frame, err := query(raw, `,"scopedVars":{"host":["web-1","web-2"]}`)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		if got := frameInt64s(t, frame); len(got) != 2 || got[0] != 8 || got[1] != 42 {
+			t.Errorf("ids = %v, want [8 42]", got)
+		}
+	})
+
+	t.Run("empty selection to NULL", func(t *testing.T) {
+		frame, err := query(raw, `,"scopedVars":{"host":[]}`)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		if frame.Rows() != 0 {
+			t.Errorf("rows = %d, want 0 (IN (NULL))", frame.Rows())
+		}
+	})
+
+	t.Run("unixEpochGroup", func(t *testing.T) {
+		frame, err := query("SELECT $__unixEpochGroup(id, 10) AS b FROM gox_f2 ORDER BY id", "")
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		if got := frameInt64s(t, frame); len(got) != 4 || got[0] != 0 || got[1] != 0 || got[2] != 0 || got[3] != 40 {
+			t.Errorf("buckets = %v, want [0 0 0 40]", got)
+		}
+	})
+
+	t.Run("unresolved variable", func(t *testing.T) {
+		if _, err := query("SELECT id FROM gox_f2 WHERE id = ${missing}", ""); err == nil ||
+			!strings.Contains(err.Error(), "unresolved variable") {
+			t.Errorf("err = %v, want unresolved variable error", err)
 		}
 	})
 }

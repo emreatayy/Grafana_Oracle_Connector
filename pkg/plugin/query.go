@@ -11,16 +11,20 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 
 	"github.com/emreatayy/oracle-datasource/pkg/convert"
+	"github.com/emreatayy/oracle-datasource/pkg/interpolate"
 )
 
 // queryModel is the query payload sent by the frontend (report §4.3). F2 wires
 // SQL, format, an optional explicit time column and a per-query large-number
-// override; mode/parameters arrive in later phases.
+// override. F3 adds scopedVars, the dashboard variables attached by
+// applyTemplateVariables (empty for alert queries — §8.3). mode/parameters
+// arrive in later phases.
 type queryModel struct {
-	SQL             string `json:"sql"`
-	Format          string `json:"format"`
-	TimeColumn      string `json:"timeColumn"`
-	LargeNumberMode string `json:"largeNumberMode"`
+	SQL             string         `json:"sql"`
+	Format          string         `json:"format"`
+	TimeColumn      string         `json:"timeColumn"`
+	LargeNumberMode string         `json:"largeNumberMode"`
+	ScopedVars      map[string]any `json:"scopedVars"`
 }
 
 // readOnlyKeywords are the only words a read-only query may start with (ADR-7).
@@ -30,7 +34,14 @@ var readOnlyKeywords = map[string]bool{
 	"WITH":   true,
 }
 
-// query executes a single query: guard → timeout → execute → typed frame.
+// query executes a single query:
+//
+//	guard(raw) → interpolate → guard(interpolated) → connect → timeout → execute
+//
+// (report §8, ADR-2, ADR-7). The interpolated SQL is kept in a local variable
+// and never written back into qm.SQL, so ExecutedQueryString and any logging
+// always carry the raw, author-written SQL (§7.5, §15). Interpolation runs
+// before ensureReady so a macro/variable problem never pings the DB.
 func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend.DataResponse {
 	var qm queryModel
 	if err := json.Unmarshal(query.JSON, &qm); err != nil {
@@ -38,7 +49,27 @@ func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend
 			fmt.Sprintf("json unmarshal: %v", err.Error()))
 	}
 
+	// ADR-7: guard the raw SQL first (the interpolated form is re-guarded
+	// below). Fail closed before any macro or variable expansion.
 	if err := validateReadOnly(qm.SQL); err != nil {
+		return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
+	}
+
+	sql, err := interpolate.Interpolate(qm.SQL, interpolate.Params{
+		TimeRange:     query.TimeRange,
+		Interval:      query.Interval,
+		MaxDataPoints: query.MaxDataPoints,
+		ScopedVars:    qm.ScopedVars,
+		NumericVars:   d.settings.NumericVariableSet(),
+	})
+	if err != nil {
+		// Interpolation errors are readable and never carry SQL (§15).
+		return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
+	}
+
+	// Belt-and-suspenders: re-check the interpolated SQL in case expansion
+	// moved an unsafe keyword to the front (§15).
+	if err := validateReadOnly(sql); err != nil {
 		return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
 	}
 
@@ -55,7 +86,7 @@ func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend
 		defer cancel()
 	}
 
-	rows, err := d.db.QueryContext(qCtx, qm.SQL)
+	rows, err := d.db.QueryContext(qCtx, sql)
 	if err != nil {
 		return d.queryError(err)
 	}

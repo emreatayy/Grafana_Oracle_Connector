@@ -233,6 +233,7 @@ export interface MyQuery extends DataQuery {
   format?: 'auto' | 'table' | 'time_series';
   timeColumn?: string;          // explicitly selected time column (filled from metadata)
   largeNumberMode?: 'string' | 'float';  // large NUMBER policy (default 'string' for table / 'float' for ts)
+  scopedVars?: Record<string, unknown>;  // attached by applyTemplateVariables at query time (never saved; absent for alert queries — §8.3)
   // Prometheus mode
   promql?: string;
   legendFormat?: string;        // series name template (default '{{ __name__ }}')
@@ -247,6 +248,7 @@ export interface MyDataSourceOptions extends DataSourceJsonData {
   queryTimeoutSec?: number; commandTimeoutSec?: number; maxRows?: number; maxSeries?: number;
   defaultMode?: QueryMode; defaultFormat?: 'auto' | 'table' | 'time_series';
   largeNumberMode?: 'string' | 'float';
+  numericVariables?: string[];  // may expand unquoted in SQL — a hint, not a trust grant (§8.2)
   // Prometheus (optional)
   promEnabled?: boolean; promUrl?: string;
   promAuthType?: 'none' | 'basic' | 'token';
@@ -424,6 +426,7 @@ ALTER SESSION SET NLS_COMP = 'BINARY'
 
 - The frontend sends the **raw** SQL + query model; it **does not** interpolate.
 - The backend uses the `sqlutil` engine — current import path `github.com/grafana/grafana-plugin-sdk-go/data/sqlutil` (moved from the legacy `backend/sqlutil`) — for parsing, longest-match and argument splitting, and defines its own **Oracle macro table**.
+- Dashboard variables reach the backend via `DataSourceWithBackend.applyTemplateVariables` (implemented in F3): the hook attaches the query's `scopedVars` (values stringified to strings / arrays of strings; built-ins and ad-hoc variables dropped), which the backend expands together with the macros. **Alert rules never call this hook** — ngalert evaluates server-side with no frontend — so alert queries carry no `scopedVars` and resolve only `$__*` + `TimeRange` (§8.3).
 - The frontend "SQL preview" feature is **display-only** (templateSrv + local macro simulation).
 
 > **Why sqlutil's defaults are not enough (verified 2026-08-07 against `data/sqlutil`):** `Interpolate` is **macro-only** — it expands `$__*` macros and never touches `${var}` (the `Query` model has no variables field), so **variable interpolation is entirely ours**. The default `$__timeFilter` produces a Postgres-style string literal (`col >= '...'`); in Oracle this risks NLS-dependent implicit conversion. `$__unixEpochFilter`/`$__unixEpochGroup` are **not** in the defaults; `$__timeGroup` emits `datepart(...)` (T-SQL/Postgres), not Oracle `TRUNC`. Multi-value `IN(...)` expansion is **not** in sqlutil. → Take the engine (parse/longest-match/args), write the macro definitions Oracle-specific.
@@ -764,6 +767,7 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 **F3 — Macro and variable engine** · 4 pg (critical path)
 - `sqlutil` engine + Oracle macro table (8.2); interval derivation (8.4); alerting fallback (8.3); multi-value `IN(...)` + escaping.
 - **DoD:** `$__timeFilter`, `$__unixEpochGroup`, `${var:csv}`, empty selection→`IN (NULL)` table-driven tested; alerting-context simulation works.
+- **Status (2026-08-08):** ✅ **done.** `pkg/interpolate` (pure, DB-free): macro-first then single-pass variable expansion over the `sqlutil` engine, with fail-closed guards — `${var}` inside a macro argument, an unknown/lowercase `$__` macro, and an unterminated `${` all error (never silent SQL). Oracle macro table shadows the T-SQL `timeGroup` and empty `table`/`column` defaults with explicit errors; ADR-9 `TO_DATE('…','YYYY-MM-DD HH24:MI:SS')` literals; `$__interval` via the §10.4 derivation (`max(IntervalMs, range_ms/maxDataPoints)` — alert defaults 1s/2s verified). Variables: `:csv` (empty → `NULL` so `IN (NULL)` = "no selection"), `:singlequote`, strict numeric-literal gate for bare emission (numericVariables is a hint, not a trust grant — `1e5` and `5) OR 1=1 --` are never bare), `'`→`''` escaping, `$__all` sentinel → error. `query.go` interpolates before `ensureReady`, keeps the raw SQL in `ExecutedQueryString`, and re-runs the read-only guard on the interpolated form (§15). Frontend `applyTemplateVariables` attaches stringified `scopedVars` (alert queries skip it — §8.3). **Verified:** 30+ table-driven unit cases (incl. the alerting-context DoD simulation) + `TestIntegration_Macros` on Oracle 21c — `$__timeFilter` + `${host:csv}` (`[42]` / `[8,42]` / empty→0 rows), `$__unixEpochGroup(id,10)`→`[0,0,0,40]`, unresolved `${missing}` errors, raw `ExecutedQueryString`; full integration suite + unit + lint clean.
 
 **F4 — SQL query editor** · 3 pg
 - Mode-tab infrastructure; SQLEditor (`@grafana/experimental`); Format-as; Time-column dropdown (wired to F9 metadata, static first).

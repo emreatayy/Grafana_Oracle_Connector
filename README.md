@@ -3,7 +3,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Grafana](https://img.shields.io/badge/Grafana-%E2%89%A512.3-F46800.svg)](https://grafana.com)
 [![Oracle](https://img.shields.io/badge/Oracle-%E2%89%A512c-red.svg)](https://www.oracle.com/database/)
-[![Status](https://img.shields.io/badge/status-F2%20done-brightgreen.svg)](#status)
+[![Status](https://img.shields.io/badge/status-F3%20done-brightgreen.svg)](#status)
 [![CI](https://github.com/emreatayy/Grafana_Oracle_Connector/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
 A **Grafana data source plugin for Oracle Database** with an optional
@@ -46,7 +46,7 @@ procedures) — all driven from the query editor.
 |---|---|
 | Design | ✅ Complete — `docs/project-report.md` (v2) |
 | Empirical verification | ✅ **8 of 8** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1) — see `verification/` |
-| Implementation | ✅ **F2 done** (Oracle connection core + typed type mapping & frame generation) — next: F3 (macro engine) |
+| Implementation | ✅ **F3 done** (connection core + typed mapping + macro & variable engine) — next: F4 (SQL query editor) |
 
 The report's riskiest assumptions were validated empirically before any code
 was written, which produced two design corrections early:
@@ -213,6 +213,18 @@ Pinned dependencies (pinned at F0, 2026-08-07):
 > empty frames, maxSeries guard. Format `<Select>` (auto/table/time_series) in
 > the query editor + `largeNumberMode` in config. Verified on Oracle 21c (unit
 > + integration tests, typed fields in table & time-series panels).
+>
+> **F3 (2026-08-08):** backend macro & variable engine in `pkg/interpolate`
+> (pure, DB-free) — `$__timeFilter`/`timeFrom`/`timeTo` (ADR-9 `TO_DATE`
+> literals), `$__unixEpochFilter`/`$__unixEpochGroup`, `$__from`/`$__to` epoch
+> ms, `$__interval`/`_ms`/`_s` via the §10.4 derivation, `${var}`/`:csv`
+> (empty → `IN (NULL)`)/`:singlequote` with a strict numeric-literal bare gate.
+> Fail-closed guards reject variables in macro arguments, unknown/lowercase
+> `$__` macros, malformed `${`, unresolved variables, and unsupported formats
+> (never silent mis-evaluating SQL). Frontend `applyTemplateVariables` attaches
+> stringified `scopedVars` (alert queries skip it — §8.3); "Numeric variables"
+> config field. Verified: 30+ table-driven unit cases (incl. alerting-context
+> DoD simulation) + `TestIntegration_Macros` on Oracle 21c.
 
 ---
 
@@ -305,12 +317,14 @@ Verify the built plugin against a running matrix Grafana (plugin load, health
 
 ## Roadmap
 
-16 implementation phases in 4 waves (~52–54 person-days). **F2 is done**
-(scaffold + Oracle connection core + typed type mapping & frame generation:
-pooled connection, session timezone pinning, ctx-cancelled queries, read-only
-guard, ORA error parsing, typed NUMBER/DATE/CLOB/NULL fields, wide/long time
-series, `largeNumberMode`). The critical path going forward is **F3 → F5**
-(macro engine + alerting) and in parallel **F6** (Prometheus proxy).
+16 implementation phases in 4 waves (~52–54 person-days). **F3 is done**
+(scaffold + Oracle connection core + typed type mapping & frame generation +
+backend macro & variable engine: pooled connection, session timezone pinning,
+ctx-cancelled queries, read-only guard, ORA error parsing, typed
+NUMBER/DATE/CLOB/NULL fields, wide/long time series, `largeNumberMode`,
+`$__timeFilter`/`$__unixEpochGroup`/`${var:csv}` interpolation with fail-closed
+guards). The critical path going forward is **F4 → F5** (query editor +
+alerting) and in parallel **F6** (Prometheus proxy).
 
 | Wave | Phases | Scope | Effort |
 |---|---|---|---|

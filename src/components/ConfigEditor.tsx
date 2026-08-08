@@ -205,6 +205,28 @@ export function ConfigEditor(props: Props) {
             width={50}
           />
         </InlineField>
+        <InlineField
+          label="Numeric variables"
+          labelWidth={24}
+          interactive
+          tooltip="Dashboard variable names that may expand unquoted in SQL (report §8.2), comma-separated. A hint only — the backend still verifies each value is a strict numeric literal before emitting it bare."
+        >
+          <Input
+            id="config-editor-numeric-vars"
+            value={jsonData.numericVariables?.join(', ') ?? ''}
+            onChange={(e) =>
+              update(
+                'numericVariables',
+                e.currentTarget.value
+                  .split(',')
+                  .map((s) => s.trim())
+                  .filter(Boolean)
+              )
+            }
+            placeholder="port, limit"
+            width={50}
+          />
+        </InlineField>
       </FieldSet>
     </>
   );

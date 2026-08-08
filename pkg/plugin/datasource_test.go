@@ -154,10 +154,10 @@ func TestQuery_InvalidJSON(t *testing.T) {
 	}
 }
 
-// TestQueryModel_Parse verifies the F2 query model fields (report §4.3) and
-// that the optional ones stay empty when absent.
+// TestQueryModel_Parse verifies the query model fields (report §4.3) and that
+// the optional ones stay empty when absent.
 func TestQueryModel_Parse(t *testing.T) {
-	raw := json.RawMessage(`{"sql":"SELECT 1 FROM DUAL","format":"time_series","timeColumn":"ts","largeNumberMode":"float"}`)
+	raw := json.RawMessage(`{"sql":"SELECT 1 FROM DUAL","format":"time_series","timeColumn":"ts","largeNumberMode":"float","scopedVars":{"host":["web-1"]}}`)
 	var qm queryModel
 	if err := json.Unmarshal(raw, &qm); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -174,13 +174,40 @@ func TestQueryModel_Parse(t *testing.T) {
 	if qm.LargeNumberMode != "float" {
 		t.Errorf("largeNumberMode = %q, want float", qm.LargeNumberMode)
 	}
+	host, ok := qm.ScopedVars["host"].([]any)
+	if !ok || len(host) != 1 || host[0] != "web-1" {
+		t.Errorf("scopedVars = %#v, want host=[\"web-1\"]", qm.ScopedVars)
+	}
 
 	var empty queryModel
 	if err := json.Unmarshal(json.RawMessage(`{"sql":"SELECT 1"}`), &empty); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if empty.Format != "" || empty.TimeColumn != "" || empty.LargeNumberMode != "" {
+	if empty.Format != "" || empty.TimeColumn != "" || empty.LargeNumberMode != "" || empty.ScopedVars != nil {
 		t.Errorf("optional fields not empty: %+v", empty)
+	}
+}
+
+// TestQuery_InterpolationErrorBeforeConnection proves the F3 ordering: an
+// unresolved ${var} fails with a readable interpolation error before any
+// connection attempt (the DB here is never reachable).
+func TestQuery_InterpolationErrorBeforeConnection(t *testing.T) {
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+
+	req := &backend.QueryDataRequest{
+		Queries: []backend.DataQuery{{
+			RefID: "A",
+			JSON:  json.RawMessage(`{"sql":"SELECT ${missing} FROM DUAL"}`),
+		}},
+	}
+	resp, _ := ds.QueryData(context.Background(), req)
+	dr := resp.Responses["A"]
+	if dr.Status != backend.StatusBadRequest {
+		t.Errorf("status = %v, want StatusBadRequest", dr.Status)
+	}
+	if !strings.Contains(dr.Error.Error(), "unresolved variable") {
+		t.Errorf("error = %q, want unresolved variable message", dr.Error)
 	}
 }
 

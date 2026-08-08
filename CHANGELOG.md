@@ -87,11 +87,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     NUMBER(10)→`*int64`, NUMBER(10,2)→`*float64`, NULL preserved, NUMBER(20)
     full precision, DATE→`*time.Time`, CLOB→`*string`, duplicate time kept,
     NULL-time rows skipped.
+- **F3 — backend macro & variable engine** (`pkg/interpolate`, pure, DB-free):
+  - `Interpolate(raw, Params)` — macro-first then single-pass variable
+    expansion over the `sqlutil` engine, with fail-closed guards: a `${var}`
+    inside a `$__macro(...)` argument, an unknown/lowercase `$__` macro, a
+    malformed unterminated `${`, an unresolved variable, and an unsupported
+    format all error explicitly (never silently mis-evaluating SQL, §15).
+  - Oracle macro table — `$__from`/`$__to` (epoch ms), `$__timeFilter`/
+    `$__timeFrom`/`$__timeTo` (ADR-9 `TO_DATE('…','YYYY-MM-DD HH24:MI:SS')`
+    literals: NLS-independent + index-friendly), `$__unixEpochFilter`/
+    `$__unixEpochGroup(col, interval)` (`FLOOR` bucketing),
+    `$__interval`/`_ms`/`_s` (via the §10.4 derivation), `$__time(col)`; the
+    T-SQL `$__timeGroup` and empty `$__table`/`$__column` sqlutil defaults are
+    shadowed with explicit errors.
+  - `deriveInterval` (§10.4): `interval_ms = max(IntervalMs, range_ms /
+    max(1, maxDataPoints))` — alert defaults verified (1s for ≤ 12h, 2s for
+    24h); the single shared source for SQL `$__interval` and later the
+    Prometheus proxy `step` (F6/F7).
+  - Variables — `${var}`/`:csv`/`:singlequote`; empty multi-value → `NULL` (so
+    `IN (NULL)` = "no selection, no data"); `'`→`''` escaping; bare emission
+    gated by a strict numeric regex (`numericVariables` is a hint, not a trust
+    grant — `1e5` and `5) OR 1=1 --` are never bare); `$__all` sentinel →
+    error; unresolved → explicit error (§8.3).
+  - `query.go` — interpolates **before** `ensureReady` (a macro/variable error
+    never pings the DB), re-runs the read-only guard on the interpolated SQL
+    (§15), and never writes interpolated SQL back into the model (raw
+    `ExecutedQueryString`, §7.5).
+  - Frontend — `applyTemplateVariables` attaches stringified `scopedVars`
+    (alert rules skip it — §8.3); "Numeric variables" field in the config
+    editor (`src/components/ConfigEditor.tsx`).
+  - **DoD met** — `$__timeFilter`, `$__unixEpochGroup`, `${var:csv}`, empty
+    selection→`IN (NULL)` table-driven tested; alerting-context simulation
+    works; `TestIntegration_Macros` on Oracle 21c.
 - **Integration test suite** (`pkg/plugin/integration_test.go`, env-gated by
   `ORACLE_TEST_DSN`) — health + version banner, bad-password ORA-01017 (no
   credential leak), typed row select, UTC session timezone, query cancellation,
-  read-only guard rejection, and the F2 typed-column matrix (table typed +
-  large-number-in-time-series).
+  read-only guard rejection, the F2 typed-column matrix (table typed +
+  large-number-in-time-series), and the F3 macro matrix (timeFilter + host csv,
+  empty selection → `IN (NULL)`, `unixEpochGroup`, unresolved-variable error,
+  raw `ExecutedQueryString`).
 
 ### Verified (empirically, 2026-08-07)
 
@@ -140,6 +174,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   NUMBER(20) at full precision as `*string` (table) / `*float64` (time series),
   DATE→`*time.Time` (UTC), CLOB→`*string`; duplicate-time rows kept, NULL-time
   rows dropped from the time-series frame.
+- F3 macros verified on Oracle 21c (`TestIntegration_Macros`): `$__timeFilter`
+  + `${host:csv}` → `[42]` / `[8,42]` / empty selection → 0 rows
+  (`IN (NULL)`); `$__unixEpochGroup(id, 10)` → `[0,0,0,40]` (computed
+  expressions classify Prec==0 → float, §6.2); an unresolved `${missing}`
+  errors without touching the DB; `ExecutedQueryString` stays raw.
+- `DataSourceWithBackend.applyTemplateVariables` is the variable-transport
+  hook: it fires for dashboard queries (attaches `scopedVars` to the backend
+  JSON) and is **never** called for alert rules — ngAlert bypasses the
+  frontend, so the §8.3 backend fallback works for free.
 
 ### Changed
 
