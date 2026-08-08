@@ -1,14 +1,22 @@
 import { DataSourceJsonData } from '@grafana/data';
 import { DataQuery } from '@grafana/schema';
 
-// Query sent to the backend (report §4.3). F1 wires SQL only; mode/format and
-// parameters arrive in later phases.
+export type QueryFormat = 'auto' | 'table' | 'time_series';
+export type LargeNumberMode = 'string' | 'float';
+
+// Query sent to the backend (report §4.3). F2 wires SQL, format, an optional
+// explicit time column and a per-query large-number override; mode and the
+// Prometheus fields arrive in later phases.
 export interface MyQuery extends DataQuery {
   sql: string;
+  format?: QueryFormat;
+  timeColumn?: string;
+  largeNumberMode?: LargeNumberMode;
 }
 
 export const DEFAULT_QUERY: Partial<MyQuery> = {
   sql: 'SELECT 1 AS value FROM DUAL',
+  format: 'auto',
 };
 
 /**
@@ -32,6 +40,9 @@ export interface MyDataSourceOptions extends DataSourceJsonData {
   sessionTimeZone?: string;
   defaultMode?: string;
   defaultFormat?: string;
+  // ADR-8: big NUMBER (scale=0, precision>15) policy. Empty = per-format
+  // default (string in table, float in time_series).
+  largeNumberMode?: LargeNumberMode;
 }
 
 /** Credentials stored securely in the backend; never sent to the browser. */

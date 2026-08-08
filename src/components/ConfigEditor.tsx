@@ -1,9 +1,19 @@
 import React, { ChangeEvent } from 'react';
-import { FieldSet, InlineField, Input, SecretInput } from '@grafana/ui';
-import { DataSourcePluginOptionsEditorProps } from '@grafana/data';
-import { MyDataSourceOptions, MySecureJsonData } from '../types';
+import { FieldSet, InlineField, Input, SecretInput, Select } from '@grafana/ui';
+import { DataSourcePluginOptionsEditorProps, SelectableValue } from '@grafana/data';
+import { LargeNumberMode, MyDataSourceOptions, MySecureJsonData } from '../types';
 
 interface Props extends DataSourcePluginOptionsEditorProps<MyDataSourceOptions, MySecureJsonData> {}
+
+const LARGE_NUMBER_OPTIONS: Array<SelectableValue<LargeNumberMode | ''>> = [
+  {
+    label: 'Auto',
+    value: '',
+    description: 'Preserve precision (string) in table, float in time series (ADR-8 default)',
+  },
+  { label: 'String (preserve precision)', value: 'string' },
+  { label: 'Float (may lose digits)', value: 'float' },
+];
 
 export function ConfigEditor(props: Props) {
   const { onOptionsChange, options } = props;
@@ -178,6 +188,20 @@ export function ConfigEditor(props: Props) {
             type="number"
             value={jsonData.maxSeries ?? 1000}
             onChange={(e) => update('maxSeries', num(e.currentTarget.value))}
+            width={50}
+          />
+        </InlineField>
+        <InlineField
+          label="Large numbers"
+          labelWidth={24}
+          interactive
+          tooltip="Policy for NUMBER(scale=0, precision>15) columns (ADR-8). Auto keeps full precision as strings in table panels and uses float in time series."
+        >
+          <Select<LargeNumberMode | ''>
+            id="config-editor-large-numbers"
+            options={LARGE_NUMBER_OPTIONS}
+            value={(jsonData.largeNumberMode as LargeNumberMode | '') ?? ''}
+            onChange={(v) => update('largeNumberMode', v.value === '' ? undefined : v.value)}
             width={50}
           />
         </InlineField>

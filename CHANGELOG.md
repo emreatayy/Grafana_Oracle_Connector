@@ -63,10 +63,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **DoD met** — config changes dispose the instance; panel-close cancellation
     is integration-tested. Health "Test" now reports the real Oracle version
     banner on the 12.4/13.1 matrix (6/6 checks).
+- **F2 — typed type mapping + frame generation** (report §6, §7, ADR-8):
+  - `pkg/convert` (pure, DB-free) — `ColumnInfo` + `Classify` decides each
+    column's kind from `ScanType()` + `DecimalSize()` (never go-ora's internal
+    `DatabaseTypeName()`); typed scan targets (`sql.Null*`, `[]byte`); `ValueOf`
+    normalizes time to UTC. `BuildFrame` shapes per §7: `auto` (time + numeric
+    value → time series, else table), `table` (all columns typed, NULL kept,
+    duplicate columns suffixed, empty result → typed empty header), `time_series`
+    (wide with single-distinct string → labels, or long with string dims +
+    time + value; NULL-time rows skipped, duplicate time kept, maxSeries
+    cardinality guard). BLOB/RAW → base64 `*string` field (SDK has no bytes
+    vector).
+  - `largeNumberMode` (ADR-8) — NUMBER(prec>15, scale=0) preserved at full
+    precision as `*string` in tables, `*float64` in time series; configurable
+    (config > per-query > per-format default).
+  - `pkg/plugin/query.go` now scans typed (`convert.ScanDest`/`ValueOf`) and
+    builds frames through `convert.BuildFrame`; the provisional generic
+    string/time builder is removed. Query model gains `format`,
+    `timeColumn`, `largeNumberMode`.
+  - Frontend: Format `<Select>` (auto/table/time_series) in the query editor;
+    "Large numbers" `<Select>` (Auto/string/float) in the config editor.
+  - **DoD met** — typed table + time-series panels verified on Oracle 21c:
+    NUMBER(10)→`*int64`, NUMBER(10,2)→`*float64`, NULL preserved, NUMBER(20)
+    full precision, DATE→`*time.Time`, CLOB→`*string`, duplicate time kept,
+    NULL-time rows skipped.
 - **Integration test suite** (`pkg/plugin/integration_test.go`, env-gated by
   `ORACLE_TEST_DSN`) — health + version banner, bad-password ORA-01017 (no
   credential leak), typed row select, UTC session timezone, query cancellation,
-  read-only guard rejection.
+  read-only guard rejection, and the F2 typed-column matrix (table typed +
+  large-number-in-time-series).
 
 ### Verified (empirically, 2026-08-07)
 
@@ -101,6 +126,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   — the F1 panel-close DoD is met.
 - Grafana's `/api/ds/query` takes query fields flattened (not nested under
   `model`); the `model` wrapper is only used by the alerting/provisioning API.
+- go-ora v2.9.0 typed scans: NUMBER rows arrive as strings but parse cleanly
+  into `sql.NullInt64`/`NullFloat64`/`NullString`; CLOB → `NullString`
+  (`setLob`), BLOB → `[]byte`; NULL → `Valid=false`/nil. Scanning into `[]any`
+  still yields strings (#533) — typed scan targets only.
+- grafana-plugin-sdk-go v0.296 has **no** `[][]byte` field vector (`NewField`
+  supports int8–uint64, float32/64, string, bool, time, json.RawMessage) →
+  BLOB/RAW fields are base64 `*string` (report §6.1 corrected).
+- SDK `FrameMeta.ExecutedQueryString` and `FrameTypeTimeSeriesWide`/`Long`
+  exist; long format = string dims + time + value (Grafana pivots to wide).
+- F2 typed frames verified on Oracle 21c: the `gox_f2` table returns
+  NUMBER(10)→`*int64`, NUMBER(10,2)→`*float64`, NULL rows as null cells,
+  NUMBER(20) at full precision as `*string` (table) / `*float64` (time series),
+  DATE→`*time.Time` (UTC), CLOB→`*string`; duplicate-time rows kept, NULL-time
+  rows dropped from the time-series frame.
 
 ### Changed
 

@@ -3,7 +3,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Grafana](https://img.shields.io/badge/Grafana-%E2%89%A512.3-F46800.svg)](https://grafana.com)
 [![Oracle](https://img.shields.io/badge/Oracle-%E2%89%A512c-red.svg)](https://www.oracle.com/database/)
-[![Status](https://img.shields.io/badge/status-F1%20done-brightgreen.svg)](#status)
+[![Status](https://img.shields.io/badge/status-F2%20done-brightgreen.svg)](#status)
 [![CI](https://github.com/emreatayy/Grafana_Oracle_Connector/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
 A **Grafana data source plugin for Oracle Database** with an optional
@@ -46,7 +46,7 @@ procedures) — all driven from the query editor.
 |---|---|
 | Design | ✅ Complete — `docs/project-report.md` (v2) |
 | Empirical verification | ✅ **8 of 8** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1) — see `verification/` |
-| Implementation | ✅ **F1 done** (Oracle connection core: pooled connection, session timezone pinning, ctx-cancelled queries, read-only guard, ORA error parsing) — next: F2 (type mapping) |
+| Implementation | ✅ **F2 done** (Oracle connection core + typed type mapping & frame generation) — next: F3 (macro engine) |
 
 The report's riskiest assumptions were validated empirically before any code
 was written, which produced two design corrections early:
@@ -204,6 +204,15 @@ Pinned dependencies (pinned at F0, 2026-08-07):
 > query timeout + `ctx` cancellation (verified server-side cancel on Oracle 21c),
 > read-only `SELECT`/`WITH` guard, ORA-#### error parsing with password
 > redaction, and the F1 config/query editors in `src/`.
+>
+> **F2 (2026-08-08):** typed type mapping + frame generation in `pkg/convert`
+> (pure, DB-free) — NUMBER/INTEGER→`*int64`, fractional→`*float64`, DATE→
+> `*time.Time` (UTC), NULL preserved, CLOB/BLOB, `largeNumberMode` (ADR-8)
+> keeps NUMBER(20) at full precision as `*string` in tables and float in time
+> series. §7 shaping: auto/table/time_series, wide/long, duplicate columns,
+> empty frames, maxSeries guard. Format `<Select>` (auto/table/time_series) in
+> the query editor + `largeNumberMode` in config. Verified on Oracle 21c (unit
+> + integration tests, typed fields in table & time-series panels).
 
 ---
 
@@ -296,11 +305,12 @@ Verify the built plugin against a running matrix Grafana (plugin load, health
 
 ## Roadmap
 
-16 implementation phases in 4 waves (~52–54 person-days). **F1 is done**
-(scaffold + Oracle connection core: pooled connection, session timezone
-pinning, ctx-cancelled queries, read-only guard, ORA error parsing). The
-critical path going forward is **F2 → F3 → F5** (typed time series + alerting)
-and in parallel **F6** (Prometheus proxy).
+16 implementation phases in 4 waves (~52–54 person-days). **F2 is done**
+(scaffold + Oracle connection core + typed type mapping & frame generation:
+pooled connection, session timezone pinning, ctx-cancelled queries, read-only
+guard, ORA error parsing, typed NUMBER/DATE/CLOB/NULL fields, wide/long time
+series, `largeNumberMode`). The critical path going forward is **F3 → F5**
+(macro engine + alerting) and in parallel **F6** (Prometheus proxy).
 
 | Wave | Phases | Scope | Effort |
 |---|---|---|---|

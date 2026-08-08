@@ -42,6 +42,10 @@ type OracleSettings struct {
 	MaxRows            int    `json:"maxRows"`
 	MaxSeries          int    `json:"maxSeries"`
 	SessionTimeZone    string `json:"sessionTimeZone"`
+	// LargeNumberMode is the ADR-8 policy for big NUMBER columns (scale=0,
+	// precision>15): "" = per-format default (string in table, float in
+	// time_series), "string", or "float".
+	LargeNumberMode string `json:"largeNumberMode"`
 }
 
 // SecretPluginSettings holds decrypted secure fields (never sent to the

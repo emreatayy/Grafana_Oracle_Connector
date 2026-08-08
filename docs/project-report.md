@@ -316,7 +316,7 @@ CI smoke-tests the binary matrix (minimum `linux-amd64` + `linux-arm64`); behavi
 | TIMESTAMP[±TZ] | `time.Time` (UTC) | `*time.Time` | ← time field; TZ→UTC conversion |
 | CHAR / VARCHAR2 / NVARCHAR2 | `string` | `*string` | |
 | CLOB / NCLOB | `string` | `*string` | Mind go-ora inline vs locator mode |
-| BLOB / RAW | `[]byte` | `*[]byte` | Displayed as base64 in table |
+| BLOB / RAW | `[]byte` | `*string` (base64) | SDK has no bytes vector (v0.296) → base64 in table; read side stays `[]byte` |
 | BOOLEAN (23c+) | `bool` | `*bool` | Not supported before 23c; `CAST` suggestion |
 | NULL | `null` | `data.Sentinel` / null field | never `"(null)"` |
 | XMLTYPE / INTERVAL / UDT | — | error | Readable error + suggested `CAST(...)` |
@@ -759,6 +759,7 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 - Pure `convert` package (6.3); the 6.1 map; the 7 algorithm; wide/long; maxSeries; duplicate columns; empty frame.
 - `largeNumberMode` (ADR-8).
 - **DoD:** Table + time-series panels work typed from Oracle; NULL, large NUMBER, and duplicate-time scenarios are unit+integration tested.
+- **Status (2026-08-08):** ✅ **done.** `pkg/convert` (pure, DB-free: `Classify` from `ScanType`+`DecimalSize`, typed `sql.Null*` scan targets, §7 shaping). `query.go` now scans typed and calls `BuildFrame`; go-ora #533 (NUMBER arrives as `string` in `[]any`) is fully worked around — every cell lands in an explicit typed field. **Verified on Oracle 21c:** `TestIntegration_TypedColumns` — NUMBER(10)→`*int64`, NUMBER(10,2)→`*float64`, NULL preserved, NUMBER(20) full precision as `*string` in table / `*float64` in time series (ADR-8), DATE→`*time.Time`, CLOB→`*string`, duplicate time kept, NULL-time rows skipped. Unit (pure fixtures) + lint clean; integration suite all green. Frontend: Format `<Select>` (auto/table/time_series) in the query editor + `largeNumberMode` in config (Auto=ADR-8 per-format).
 
 **F3 — Macro and variable engine** · 4 pg (critical path)
 - `sqlutil` engine + Oracle macro table (8.2); interval derivation (8.4); alerting fallback (8.3); multi-value `IN(...)` + escaping.

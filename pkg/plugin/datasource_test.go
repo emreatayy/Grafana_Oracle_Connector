@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	go_ora "github.com/sijms/go-ora/v2"
@@ -155,35 +154,34 @@ func TestQuery_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestValuesToField(t *testing.T) {
-	t.Run("empty column yields a nullable string field", func(t *testing.T) {
-		f := valuesToField("c", []any{})
-		if f.Len() != 0 {
-			t.Errorf("len = %d, want 0", f.Len())
-		}
-	})
+// TestQueryModel_Parse verifies the F2 query model fields (report §4.3) and
+// that the optional ones stay empty when absent.
+func TestQueryModel_Parse(t *testing.T) {
+	raw := json.RawMessage(`{"sql":"SELECT 1 FROM DUAL","format":"time_series","timeColumn":"ts","largeNumberMode":"float"}`)
+	var qm queryModel
+	if err := json.Unmarshal(raw, &qm); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if qm.SQL != "SELECT 1 FROM DUAL" {
+		t.Errorf("sql = %q", qm.SQL)
+	}
+	if qm.Format != "time_series" {
+		t.Errorf("format = %q, want time_series", qm.Format)
+	}
+	if qm.TimeColumn != "ts" {
+		t.Errorf("timeColumn = %q, want ts", qm.TimeColumn)
+	}
+	if qm.LargeNumberMode != "float" {
+		t.Errorf("largeNumberMode = %q, want float", qm.LargeNumberMode)
+	}
 
-	t.Run("time column", func(t *testing.T) {
-		ts := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
-		f := valuesToField("t", []any{ts, nil, ts})
-		if f.Len() != 3 {
-			t.Errorf("len = %d, want 3", f.Len())
-		}
-	})
-
-	t.Run("string column", func(t *testing.T) {
-		f := valuesToField("s", []any{"a", nil, "c"})
-		if f.Len() != 3 {
-			t.Errorf("len = %d, want 3", f.Len())
-		}
-	})
-
-	t.Run("mixed column stringifies", func(t *testing.T) {
-		f := valuesToField("m", []any{"a", int64(42)})
-		if f.Len() != 2 {
-			t.Errorf("len = %d, want 2", f.Len())
-		}
-	})
+	var empty queryModel
+	if err := json.Unmarshal(json.RawMessage(`{"sql":"SELECT 1"}`), &empty); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if empty.Format != "" || empty.TimeColumn != "" || empty.LargeNumberMode != "" {
+		t.Errorf("optional fields not empty: %+v", empty)
+	}
 }
 
 func TestDispose_ClosesDB(t *testing.T) {
