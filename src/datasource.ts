@@ -2,10 +2,15 @@ import { AdHocVariableFilter, DataSourceInstanceSettings, CoreApp, ScopedVars } 
 import { DataSourceWithBackend } from '@grafana/runtime';
 
 import { MyQuery, MyDataSourceOptions, DEFAULT_QUERY } from './types';
+import { OracleVariableSupport } from './variableSupport';
 
 export class DataSource extends DataSourceWithBackend<MyQuery, MyDataSourceOptions> {
   constructor(instanceSettings: DataSourceInstanceSettings<MyDataSourceOptions>) {
     super(instanceSettings);
+    // Query variables (report §8.5): without this, Grafana's variable editor
+    // has no Query field and the preview never runs. With it, the variable
+    // editor reuses the F4 SQL editor and the standard backend query path.
+    this.variables = new OracleVariableSupport();
   }
 
   getDefaultQuery(_: CoreApp): Partial<MyQuery> {

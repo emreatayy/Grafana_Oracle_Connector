@@ -149,6 +149,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   large-number-in-time-series), and the F3 macro matrix (timeFilter + host csv,
   empty selection → `IN (NULL)`, `unixEpochGroup`, unresolved-variable error,
   raw `ExecutedQueryString`).
+- **Query-variable support** (`src/variableSupport.ts` + `src/datasource.ts`,
+  report §8.5) — the plugin extends `DataSourceVariableSupport` and registers
+  it as `this.variables`, so Grafana's query-variable editor renders the
+  plugin's own F4 SQL editor and runs the preview through the standard backend
+  query path. Previously `getVariableQueryEditor` returned `null` (no custom
+  variable support declared), so the variable editor had **no Query field** and
+  "Preview of values" stayed at 0. Verified live on Grafana 13.1 (:3002):
+  selecting `oracle-datasource`, entering `SELECT DISTINCT txt FROM gox_demo
+  ORDER BY txt`, and clicking Preview returns all 12 values (node-0 … node-11).
 
 ### Verified (empirically, 2026-08-07)
 
