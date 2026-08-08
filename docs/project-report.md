@@ -642,6 +642,16 @@ Prometheus mode:
 ```
 
 - The mode selection is stored **per query**; the DS default mode is in config.
+- **Editor implementation (F4):** the `@grafana/experimental` SQLEditor named in the
+  sketch is realized via **`@grafana/plugin-ui`**, the package that succeeded it for
+  Grafana 13 — `@grafana/experimental@2.1.6` peerDependencies cap at
+  `@grafana/ui ^10.4 || ^11.0`, incompatible with the pinned 13.1.0 SDK (and `npm ci`
+  would fail). `@grafana/plugin-ui@0.17.3` (peer `^13.0.0`, used by the current Athena
+  datasource on 13.1) exports the same `SQLEditor` + `LanguageDefinition` API.
+- **Deferred:** the read-only "Preview: interpolated SQL" is not in F4. ADR-2 owns
+  interpolation server-side, so a faithful preview needs a TS mirror of the Go engine
+  (divergence risk) or a backend resource — a natural fit with F8 variables / F15
+  commands, which already use `CallResourceHandler`.
 - **Run command** button (SQL mode): posts the current SQL as an anonymous PL/SQL command via `postResource('command', …)` (§12). A deliberate, one-shot action — never re-run by refresh/alerting; result/error shown inline.
 
 ### 14.2 ConfigEditor
@@ -770,8 +780,9 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 - **Status (2026-08-08):** ✅ **done.** `pkg/interpolate` (pure, DB-free): macro-first then single-pass variable expansion over the `sqlutil` engine, with fail-closed guards — `${var}` inside a macro argument, an unknown/lowercase `$__` macro, and an unterminated `${` all error (never silent SQL). Oracle macro table shadows the T-SQL `timeGroup` and empty `table`/`column` defaults with explicit errors; ADR-9 `TO_DATE('…','YYYY-MM-DD HH24:MI:SS')` literals; `$__interval` via the §10.4 derivation (`max(IntervalMs, range_ms/maxDataPoints)` — alert defaults 1s/2s verified). Variables: `:csv` (empty → `NULL` so `IN (NULL)` = "no selection"), `:singlequote`, strict numeric-literal gate for bare emission (numericVariables is a hint, not a trust grant — `1e5` and `5) OR 1=1 --` are never bare), `'`→`''` escaping, `$__all` sentinel → error. `query.go` interpolates before `ensureReady`, keeps the raw SQL in `ExecutedQueryString`, and re-runs the read-only guard on the interpolated form (§15). Frontend `applyTemplateVariables` attaches stringified `scopedVars` (alert queries skip it — §8.3). **Verified:** 30+ table-driven unit cases (incl. the alerting-context DoD simulation) + `TestIntegration_Macros` on Oracle 21c — `$__timeFilter` + `${host:csv}` (`[42]` / `[8,42]` / empty→0 rows), `$__unixEpochGroup(id,10)`→`[0,0,0,40]`, unresolved `${missing}` errors, raw `ExecutedQueryString`; full integration suite + unit + lint clean.
 
 **F4 — SQL query editor** · 3 pg
-- Mode-tab infrastructure; SQLEditor (`@grafana/experimental`); Format-as; Time-column dropdown (wired to F9 metadata, static first).
+- Mode-tab infrastructure; SQLEditor (via `@grafana/plugin-ui` — see §14.1); Format-as; Time-column dropdown (wired to F9 metadata, static first).
 - **DoD:** SQL panel renders in both formats; mode stored per query.
+- **Status (2026-08-08):** ✅ **done.** Mode-tab infrastructure (`@grafana/ui` `Tab`s): `Oracle (SQL)` | `Prometheus (PromQL)`, stored **per query** (`query.mode`, DS `defaultMode` in config); the Prometheus tab is a placeholder until F6 and the backend **rejects** a saved `mode:"prometheus"` query with a clear error before any connection (fail closed, never executed as SQL). SQL editor is the **`@grafana/plugin-ui`** `SQLEditor` with an Oracle monarch language (`src/language/oracle.ts`, built on `grafanaStandardSQLLanguage` + Oracle keywords/functions/`||`); autocomplete (tables/columns from metadata) is F9. Format-as kept; **Time-column** dropdown (Auto + custom text via `allowCustomValue`; metadata list in F9), already honored by `convert.Options.TimeColumn`. **DoD met** — SQL panel renders in both formats and the mode is stored per query; verified on Grafana 12.4 + 13.1 (plugin check 6/6) and the query-editor e2e specs.
 
 **F5 — Alerting (SQL, basic)** · 3 pg
 - Layer 1 + Layer 2 patterns; `Reduce(count)`; the interval/maxDataPoints formula (10.4); error state.

@@ -1,7 +1,7 @@
 import React, { ChangeEvent } from 'react';
 import { FieldSet, InlineField, Input, SecretInput, Select } from '@grafana/ui';
 import { DataSourcePluginOptionsEditorProps, SelectableValue } from '@grafana/data';
-import { LargeNumberMode, MyDataSourceOptions, MySecureJsonData } from '../types';
+import { LargeNumberMode, MyDataSourceOptions, MySecureJsonData, QueryMode } from '../types';
 
 interface Props extends DataSourcePluginOptionsEditorProps<MyDataSourceOptions, MySecureJsonData> {}
 
@@ -13,6 +13,12 @@ const LARGE_NUMBER_OPTIONS: Array<SelectableValue<LargeNumberMode | ''>> = [
   },
   { label: 'String (preserve precision)', value: 'string' },
   { label: 'Float (may lose digits)', value: 'float' },
+];
+
+// Default query-editor mode (report §14.1). Prometheus is a placeholder until F6.
+const MODE_OPTIONS: Array<SelectableValue<QueryMode>> = [
+  { label: 'SQL (Oracle)', value: 'sql' },
+  { label: 'Prometheus (PromQL)', value: 'prometheus' },
 ];
 
 export function ConfigEditor(props: Props) {
@@ -119,6 +125,23 @@ export function ConfigEditor(props: Props) {
             width={50}
             onReset={onResetPassword}
             onChange={onPasswordChange}
+          />
+        </InlineField>
+      </FieldSet>
+
+      <FieldSet label="General">
+        <InlineField
+          label="Default mode"
+          labelWidth={24}
+          interactive
+          tooltip="Editor tab opened for new queries (report §14.1). Each query stores its own mode; this is only the default. Prometheus is a placeholder until F6."
+        >
+          <Select<QueryMode>
+            id="config-editor-default-mode"
+            options={MODE_OPTIONS}
+            value={jsonData.defaultMode ?? 'sql'}
+            onChange={(v) => update('defaultMode', v.value)}
+            width={50}
           />
         </InlineField>
       </FieldSet>

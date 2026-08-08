@@ -125,6 +125,29 @@ func TestQuery_GuardRejectsBeforeExecution(t *testing.T) {
 	}
 }
 
+// TestQuery_PrometheusModeRejected proves the F4 fail-closed mode guard: a
+// saved Prometheus-mode query is rejected before any connection attempt (the
+// DB here is never reachable), never executed as SQL against Oracle.
+func TestQuery_PrometheusModeRejected(t *testing.T) {
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+
+	req := &backend.QueryDataRequest{
+		Queries: []backend.DataQuery{{
+			RefID: "A",
+			JSON:  json.RawMessage(`{"mode":"prometheus","sql":"SELECT 1 FROM DUAL"}`),
+		}},
+	}
+	resp, _ := ds.QueryData(context.Background(), req)
+	dr := resp.Responses["A"]
+	if dr.Status != backend.StatusBadRequest {
+		t.Errorf("status = %v, want StatusBadRequest", dr.Status)
+	}
+	if !strings.Contains(dr.Error.Error(), "Prometheus mode is not implemented") {
+		t.Errorf("error = %q, want Prometheus-not-implemented message", dr.Error)
+	}
+}
+
 func TestQuery_EmptySQLRejected(t *testing.T) {
 	ds := newTestDatasource(t)
 	defer ds.Dispose()
@@ -157,7 +180,7 @@ func TestQuery_InvalidJSON(t *testing.T) {
 // TestQueryModel_Parse verifies the query model fields (report §4.3) and that
 // the optional ones stay empty when absent.
 func TestQueryModel_Parse(t *testing.T) {
-	raw := json.RawMessage(`{"sql":"SELECT 1 FROM DUAL","format":"time_series","timeColumn":"ts","largeNumberMode":"float","scopedVars":{"host":["web-1"]}}`)
+	raw := json.RawMessage(`{"sql":"SELECT 1 FROM DUAL","format":"time_series","timeColumn":"ts","largeNumberMode":"float","scopedVars":{"host":["web-1"]},"mode":"prometheus"}`)
 	var qm queryModel
 	if err := json.Unmarshal(raw, &qm); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -174,6 +197,9 @@ func TestQueryModel_Parse(t *testing.T) {
 	if qm.LargeNumberMode != "float" {
 		t.Errorf("largeNumberMode = %q, want float", qm.LargeNumberMode)
 	}
+	if qm.Mode != "prometheus" {
+		t.Errorf("mode = %q, want prometheus", qm.Mode)
+	}
 	host, ok := qm.ScopedVars["host"].([]any)
 	if !ok || len(host) != 1 || host[0] != "web-1" {
 		t.Errorf("scopedVars = %#v, want host=[\"web-1\"]", qm.ScopedVars)
@@ -183,7 +209,7 @@ func TestQueryModel_Parse(t *testing.T) {
 	if err := json.Unmarshal(json.RawMessage(`{"sql":"SELECT 1"}`), &empty); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if empty.Format != "" || empty.TimeColumn != "" || empty.LargeNumberMode != "" || empty.ScopedVars != nil {
+	if empty.Format != "" || empty.TimeColumn != "" || empty.LargeNumberMode != "" || empty.ScopedVars != nil || empty.Mode != "" {
 		t.Errorf("optional fields not empty: %+v", empty)
 	}
 }

@@ -119,6 +119,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **DoD met** — `$__timeFilter`, `$__unixEpochGroup`, `${var:csv}`, empty
     selection→`IN (NULL)` table-driven tested; alerting-context simulation
     works; `TestIntegration_Macros` on Oracle 21c.
+- **F4 — SQL query editor** (report §14.1):
+  - `src/types.ts` — `QueryMode = 'sql' | 'prometheus'`; `MyQuery.mode?` and
+    inert `promql?` (until F6); `MyDataSourceOptions.defaultMode?: QueryMode`.
+  - Mode-tab infrastructure in `src/components/QueryEditor.tsx` — `TabsBar`
+    with `Oracle (SQL)` | `Prometheus (PromQL)`; the mode is stored **per
+    query** and defaults to the datasource `defaultMode` (config "Default mode"
+    `<Select>` in `src/components/ConfigEditor.tsx`). The Prometheus tab is a
+    placeholder until F6/F7.
+  - The bare textarea is replaced by the **`@grafana/plugin-ui`** `SQLEditor`
+    (the package that succeeded `@grafana/experimental` for Grafana 13 — its
+    peer range caps at SDK ^11 and would break `npm ci` against the 13.1.0
+    pin). Oracle monarch language in `src/language/oracle.ts`: spreads
+    `grafanaStandardSQLLanguage` + Oracle/PL/SQL keywords, built-in functions,
+    and the `||` operator; `tokenPostfix: '.oracle'`.
+  - Format `<Select>` (auto/table/time_series, from F2) and a static Time
+    column `<Select allowCustomValue>` (Auto + custom text; metadata list
+    wired in F9) sit above the editor.
+  - Backend fail-closed mode guard in `pkg/plugin/query.go` — a saved
+    `mode:"prometheus"` query returns a clean 400 ("not implemented, planned in
+    phase F6") before any interpolation or connection; unit-tested
+    (`TestQuery_PrometheusModeRejected`).
+  - **DoD met** — SQL panel renders in both formats; mode stored per query;
+    verified by the query-editor e2e specs and the 12.4/13.1 plugin check 6/6.
 - **Integration test suite** (`pkg/plugin/integration_test.go`, env-gated by
   `ORACLE_TEST_DSN`) — health + version banner, bad-password ORA-01017 (no
   credential leak), typed row select, UTC session timezone, query cancellation,
@@ -183,6 +206,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hook: it fires for dashboard queries (attaches `scopedVars` to the backend
   JSON) and is **never** called for alert rules — ngAlert bypasses the
   frontend, so the §8.3 backend fallback works for free.
+- `@grafana/experimental@2.1.6` peer range (`@grafana/ui ^10.4.0 || ^11.0.0`)
+  is incompatible with the 13.1.0 SDK pin and breaks `npm ci` (ERESOLVE) — its
+  successor **`@grafana/plugin-ui@0.17.3`** (peer `@grafana/ui ^13.0.0`, the
+  current `grafana/athena-datasource` dependency) re-exports the identical
+  `SQLEditor` + `LanguageDefinition` API, so F4 uses plugin-ui. It is not in
+  `.config/bundler/externals.ts` and is bundled; `@grafana/ui` stays external
+  so monaco comes from the host Grafana (12.4 and 13.1 both ship it).
+- plugin-ui `SQLEditor` gives the monaco CodeEditor textarea **no accessible
+  label** — the e2e locator is a `data-testid` wrapper (`query-editor-sql`),
+  not `getByRole('textbox', { name: 'SQL' })`.
+- F4 verified on Grafana 12.4 + 13.1 (plugin check 6/6) and the query-editor
+  e2e specs: the SQL editor renders, the mode tabs switch and are stored per
+  query, and the backend rejects a saved `mode:"prometheus"` query with a
+  clean 400 before touching Oracle.
 
 ### Changed
 

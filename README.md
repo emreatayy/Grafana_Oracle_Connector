@@ -3,7 +3,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Grafana](https://img.shields.io/badge/Grafana-%E2%89%A512.3-F46800.svg)](https://grafana.com)
 [![Oracle](https://img.shields.io/badge/Oracle-%E2%89%A512c-red.svg)](https://www.oracle.com/database/)
-[![Status](https://img.shields.io/badge/status-F3%20done-brightgreen.svg)](#status)
+[![Status](https://img.shields.io/badge/status-F4%20done-brightgreen.svg)](#status)
 [![CI](https://github.com/emreatayy/Grafana_Oracle_Connector/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
 A **Grafana data source plugin for Oracle Database** with an optional
@@ -46,7 +46,7 @@ procedures) — all driven from the query editor.
 |---|---|
 | Design | ✅ Complete — `docs/project-report.md` (v2) |
 | Empirical verification | ✅ **8 of 8** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1) — see `verification/` |
-| Implementation | ✅ **F3 done** (connection core + typed mapping + macro & variable engine) — next: F4 (SQL query editor) |
+| Implementation | ✅ **F4 done** (connection core + typed mapping + macro & variable engine + SQL query editor) — next: F5 (basic alerting) / F6 (Prometheus proxy) |
 
 The report's riskiest assumptions were validated empirically before any code
 was written, which produced two design corrections early:
@@ -225,6 +225,17 @@ Pinned dependencies (pinned at F0, 2026-08-07):
 > stringified `scopedVars` (alert queries skip it — §8.3); "Numeric variables"
 > config field. Verified: 30+ table-driven unit cases (incl. alerting-context
 > DoD simulation) + `TestIntegration_Macros` on Oracle 21c.
+>
+> **F4 (2026-08-08):** SQL query editor in `src/` — mode-tab infrastructure
+> (`Oracle (SQL)` | `Prometheus (PromQL)`, stored per query, DS `defaultMode`
+> in config; the Prometheus tab is a placeholder until F6 and the backend
+> rejects a saved `mode:"prometheus"` query before any connection). The bare
+> textarea is replaced by the **`@grafana/plugin-ui`** `SQLEditor` (the package
+> that succeeded `@grafana/experimental` for Grafana 13 — its peer range caps
+> at SDK ^11 and would break `npm ci`) with an Oracle monarch language
+> (`src/language/oracle.ts`: ANSI + Oracle keywords, built-in functions, `||`).
+> Time-column dropdown (Auto + custom text; metadata list in F9). Verified:
+> query-editor e2e specs + Grafana 12.4/13.1 plugin check 6/6.
 
 ---
 
@@ -317,14 +328,15 @@ Verify the built plugin against a running matrix Grafana (plugin load, health
 
 ## Roadmap
 
-16 implementation phases in 4 waves (~52–54 person-days). **F3 is done**
+16 implementation phases in 4 waves (~52–54 person-days). **F4 is done**
 (scaffold + Oracle connection core + typed type mapping & frame generation +
-backend macro & variable engine: pooled connection, session timezone pinning,
-ctx-cancelled queries, read-only guard, ORA error parsing, typed
-NUMBER/DATE/CLOB/NULL fields, wide/long time series, `largeNumberMode`,
+backend macro & variable engine + SQL query editor: pooled connection, session
+timezone pinning, ctx-cancelled queries, read-only guard, ORA error parsing,
+typed NUMBER/DATE/CLOB/NULL fields, wide/long time series, `largeNumberMode`,
 `$__timeFilter`/`$__unixEpochGroup`/`${var:csv}` interpolation with fail-closed
-guards). The critical path going forward is **F4 → F5** (query editor +
-alerting) and in parallel **F6** (Prometheus proxy).
+guards, mode-tab query editor with an Oracle monarch language). The critical
+path going forward is **F5** (basic alerting) and in parallel **F6** (Prometheus
+proxy).
 
 | Wave | Phases | Scope | Effort |
 |---|---|---|---|

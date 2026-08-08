@@ -17,14 +17,16 @@ import (
 // queryModel is the query payload sent by the frontend (report §4.3). F2 wires
 // SQL, format, an optional explicit time column and a per-query large-number
 // override. F3 adds scopedVars, the dashboard variables attached by
-// applyTemplateVariables (empty for alert queries — §8.3). mode/parameters
-// arrive in later phases.
+// applyTemplateVariables (empty for alert queries — §8.3). F4 adds mode, the
+// per-query Oracle/Prometheus editor selection (the Prometheus path is guarded
+// until F6); parameters arrive in later phases.
 type queryModel struct {
 	SQL             string         `json:"sql"`
 	Format          string         `json:"format"`
 	TimeColumn      string         `json:"timeColumn"`
 	LargeNumberMode string         `json:"largeNumberMode"`
 	ScopedVars      map[string]any `json:"scopedVars"`
+	Mode            string         `json:"mode"`
 }
 
 // readOnlyKeywords are the only words a read-only query may start with (ADR-7).
@@ -47,6 +49,15 @@ func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend
 	if err := json.Unmarshal(query.JSON, &qm); err != nil {
 		return backend.ErrDataResponse(backend.StatusBadRequest,
 			fmt.Sprintf("json unmarshal: %v", err.Error()))
+	}
+
+	// F4: the mode is the per-query editor selection (report §14.1). Only the
+	// Oracle SQL path is implemented; a saved Prometheus-mode query must fail
+	// cleanly instead of being executed as SQL against Oracle. Fail closed
+	// before any interpolation or connection attempt.
+	if qm.Mode == "prometheus" {
+		return backend.ErrDataResponse(backend.StatusBadRequest,
+			"Prometheus mode is not implemented yet (planned in phase F6)")
 	}
 
 	// ADR-7: guard the raw SQL first (the interpolated form is re-guarded

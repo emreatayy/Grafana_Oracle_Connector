@@ -3,18 +3,23 @@ import { DataQuery } from '@grafana/schema';
 
 export type QueryFormat = 'auto' | 'table' | 'time_series';
 export type LargeNumberMode = 'string' | 'float';
+// Per-query editor mode (report §4.3, §14.1). 'prometheus' is a placeholder
+// until F6/F7; the backend rejects it with a clear error (F4).
+export type QueryMode = 'sql' | 'prometheus';
 
 // Query sent to the backend (report §4.3). F2 wires SQL, format, an optional
 // explicit time column and a per-query large-number override. F3 adds
 // scopedVars, the dashboard variables attached at query time by
-// applyTemplateVariables (alert queries never carry them — §8.3). mode and the
-// Prometheus fields arrive in later phases.
+// applyTemplateVariables (alert queries never carry them — §8.3). F4 adds mode
+// (the editor tab selection, stored per query) and promql (inert until F6).
 export interface MyQuery extends DataQuery {
   sql: string;
+  mode?: QueryMode;
   format?: QueryFormat;
   timeColumn?: string;
   largeNumberMode?: LargeNumberMode;
   scopedVars?: Record<string, unknown>;
+  promql?: string;
 }
 
 export const DEFAULT_QUERY: Partial<MyQuery> = {
@@ -41,7 +46,7 @@ export interface MyDataSourceOptions extends DataSourceJsonData {
   maxRows?: number;
   maxSeries?: number;
   sessionTimeZone?: string;
-  defaultMode?: string;
+  defaultMode?: QueryMode;
   defaultFormat?: string;
   // ADR-8: big NUMBER (scale=0, precision>15) policy. Empty = per-format
   // default (string in table, float in time_series).
