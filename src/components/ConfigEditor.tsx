@@ -1,7 +1,13 @@
 import React, { ChangeEvent } from 'react';
-import { FieldSet, InlineField, Input, SecretInput, Select } from '@grafana/ui';
+import { FieldSet, InlineField, Input, SecretInput, Select, Switch } from '@grafana/ui';
 import { DataSourcePluginOptionsEditorProps, SelectableValue } from '@grafana/data';
-import { LargeNumberMode, MyDataSourceOptions, MySecureJsonData, QueryMode } from '../types';
+import {
+  LargeNumberMode,
+  MyDataSourceOptions,
+  MySecureJsonData,
+  PromAuthType,
+  QueryMode,
+} from '../types';
 
 interface Props extends DataSourcePluginOptionsEditorProps<MyDataSourceOptions, MySecureJsonData> {}
 
@@ -15,15 +21,24 @@ const LARGE_NUMBER_OPTIONS: Array<SelectableValue<LargeNumberMode | ''>> = [
   { label: 'Float (may lose digits)', value: 'float' },
 ];
 
-// Default query-editor mode (report §14.1). Prometheus is a placeholder until F6.
+// Default query-editor mode (report §14.1).
 const MODE_OPTIONS: Array<SelectableValue<QueryMode>> = [
   { label: 'SQL (Oracle)', value: 'sql' },
   { label: 'Prometheus (PromQL)', value: 'prometheus' },
 ];
 
+// Prometheus proxy auth (report §9.1).
+const PROM_AUTH_OPTIONS: Array<SelectableValue<PromAuthType>> = [
+  { label: 'None', value: 'none' },
+  { label: 'Basic auth', value: 'basic' },
+  { label: 'Bearer token', value: 'token' },
+];
+
 export function ConfigEditor(props: Props) {
   const { onOptionsChange, options } = props;
   const { jsonData, secureJsonFields, secureJsonData } = options;
+
+  const authType: PromAuthType = jsonData.promAuthType ?? 'none';
 
   const update = <K extends keyof MyDataSourceOptions>(key: K, value: MyDataSourceOptions[K]) => {
     onOptionsChange({ ...options, jsonData: { ...jsonData, [key]: value } });
@@ -34,18 +49,22 @@ export function ConfigEditor(props: Props) {
     return Number.isFinite(n) ? n : 0;
   };
 
-  const onPasswordChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onOptionsChange({
-      ...options,
-      secureJsonData: { ...secureJsonData, o_password: event.target.value },
-    });
-  };
+  // One generic pair of handlers for every secret field (Oracle password and the
+  // Prometheus credentials). SecretInput only ever calls onChange when the user
+  // types a new value, and onReset when the "reset" action is clicked.
+  const onSecretChange =
+    (key: keyof MySecureJsonData) => (event: ChangeEvent<HTMLInputElement>) => {
+      onOptionsChange({
+        ...options,
+        secureJsonData: { ...secureJsonData, [key]: event.target.value },
+      });
+    };
 
-  const onResetPassword = () => {
+  const onResetSecret = (key: keyof MySecureJsonData) => () => {
     onOptionsChange({
       ...options,
-      secureJsonFields: { ...secureJsonFields, o_password: false },
-      secureJsonData: { ...secureJsonData, o_password: '' },
+      secureJsonFields: { ...secureJsonFields, [key]: false },
+      secureJsonData: { ...secureJsonData, [key]: '' },
     });
   };
 
@@ -123,8 +142,102 @@ export function ConfigEditor(props: Props) {
             value={secureJsonData?.o_password}
             placeholder="Oracle password"
             width={50}
-            onReset={onResetPassword}
-            onChange={onPasswordChange}
+            onReset={onResetSecret('o_password')}
+            onChange={onSecretChange('o_password')}
+          />
+        </InlineField>
+      </FieldSet>
+
+      <FieldSet label="Prometheus">
+        <InlineField
+          label="Enable proxy"
+          labelWidth={24}
+          interactive
+          tooltip="Forward Prometheus-mode queries to a Prometheus HTTP API v1 (report §9). When disabled, Prometheus-mode queries fail cleanly without touching Oracle."
+        >
+          <Switch
+            id="config-editor-prom-enabled"
+            value={jsonData.promEnabled ?? false}
+            onChange={(e) => update('promEnabled', e.currentTarget.checked)}
+          />
+        </InlineField>
+        <InlineField
+          label="URL"
+          labelWidth={24}
+          interactive
+          tooltip="Base URL of the Prometheus server (http/https only; embedded credentials are rejected)."
+        >
+          <Input
+            id="config-editor-prom-url"
+            value={jsonData.promUrl}
+            onChange={(e) => update('promUrl', e.currentTarget.value)}
+            placeholder="http://localhost:9090"
+            width={50}
+          />
+        </InlineField>
+        <InlineField
+          label="Auth type"
+          labelWidth={24}
+          interactive
+          tooltip="HTTP authentication for Prometheus requests: none, basic (user + password) or bearer token. Credentials are stored securely."
+        >
+          <Select<PromAuthType>
+            id="config-editor-prom-auth"
+            options={PROM_AUTH_OPTIONS}
+            value={jsonData.promAuthType ?? 'none'}
+            onChange={(v) => update('promAuthType', v.value)}
+            width={50}
+          />
+        </InlineField>
+        {authType === 'basic' && (
+          <>
+            <InlineField label="Basic user" labelWidth={24}>
+              <SecretInput
+                id="config-editor-prom-user"
+                isConfigured={secureJsonFields.promUser}
+                value={secureJsonData?.promUser}
+                placeholder="Prometheus basic auth user"
+                width={50}
+                onReset={onResetSecret('promUser')}
+                onChange={onSecretChange('promUser')}
+              />
+            </InlineField>
+            <InlineField label="Basic password" labelWidth={24}>
+              <SecretInput
+                id="config-editor-prom-password"
+                isConfigured={secureJsonFields.promPassword}
+                value={secureJsonData?.promPassword}
+                placeholder="Prometheus basic auth password"
+                width={50}
+                onReset={onResetSecret('promPassword')}
+                onChange={onSecretChange('promPassword')}
+              />
+            </InlineField>
+          </>
+        )}
+        {authType === 'token' && (
+          <InlineField label="Bearer token" labelWidth={24}>
+            <SecretInput
+              id="config-editor-prom-token"
+              isConfigured={secureJsonFields.promToken}
+              value={secureJsonData?.promToken}
+              placeholder="Prometheus bearer token"
+              width={50}
+              onReset={onResetSecret('promToken')}
+              onChange={onSecretChange('promToken')}
+            />
+          </InlineField>
+        )}
+        <InlineField
+          label="Skip TLS verify"
+          labelWidth={24}
+          interactive
+          tooltip="Disable TLS certificate verification for self-signed endpoints. Off by default; enable only for trusted private Prometheus servers."
+        >
+          <Switch
+            id="config-editor-prom-tls"
+            value={jsonData.promTlsSkipVerify ?? false}
+            onChange={(e) => update('promTlsSkipVerify', e.currentTarget.checked)}
           />
         </InlineField>
       </FieldSet>

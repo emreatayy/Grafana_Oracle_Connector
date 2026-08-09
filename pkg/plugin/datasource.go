@@ -14,6 +14,7 @@ import (
 
 	"github.com/emreatayy/oracle-datasource/pkg/models"
 	"github.com/emreatayy/oracle-datasource/pkg/oracle"
+	"github.com/emreatayy/oracle-datasource/pkg/prom"
 )
 
 // healthTimeout bounds the whole health-check connect (report §13).
@@ -127,10 +128,48 @@ func (d *Datasource) CheckHealth(_ context.Context, _ *backend.CheckHealthReques
 		return d.healthError(err), nil
 	}
 
+	msg := strings.TrimSpace(banner)
+	// F6: when the Prometheus proxy is enabled, also probe it and report the
+	// version banner. A broken proxy is surfaced as health=error (report §9.2).
+	if d.settings.PromEnabled {
+		promMsg, promErr := d.promHealth(ctx)
+		if promErr != nil {
+			return &backend.CheckHealthResult{
+				Status:  backend.HealthStatusError,
+				Message: fmt.Sprintf("Oracle OK: %s — Prometheus: %s", msg, d.safeMessage(promErr)),
+			}, nil
+		}
+		msg = fmt.Sprintf("%s — Prometheus %s", msg, promMsg)
+	}
+
 	return &backend.CheckHealthResult{
 		Status:  backend.HealthStatusOk,
-		Message: strings.TrimSpace(banner),
+		Message: msg,
 	}, nil
+}
+
+// promHealth probes the configured Prometheus and returns its version banner.
+func (d *Datasource) promHealth(ctx context.Context) (string, error) {
+	user, password, token := d.settings.PromCreds()
+	client, err := prom.NewClient(d.settings.PromURL, prom.Options{
+		AuthType:    d.settings.PromAuthType,
+		User:        user,
+		Password:    password,
+		Token:       token,
+		TLSInsecure: d.settings.PromTlsSkipVerify,
+		Timeout:     time.Duration(d.settings.QueryTimeoutSec) * time.Second,
+	})
+	if err != nil {
+		return "", err
+	}
+	version, err := client.BuildInfo(ctx)
+	if err != nil {
+		return "", err
+	}
+	if version == "" {
+		version = "reachable"
+	}
+	return version, nil
 }
 
 // healthError formats a health failure without leaking credentials.

@@ -45,8 +45,8 @@ procedures) — all driven from the query editor.
 | Stage | State |
 |---|---|
 | Design | ✅ Complete — `docs/project-report.md` (v2) |
-| Empirical verification | ✅ **9 of 9** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1) — see `verification/` |
-| Implementation | ✅ **F5 done** (connection core + typed mapping + macro & variable engine + SQL query editor + basic alerting) — next: F6 (Prometheus proxy) |
+| Empirical verification | ✅ **10 of 10** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1, Prometheus 3.5.0) — see `verification/` |
+| Implementation | ✅ **F6 done** (connection core + typed mapping + macro & variable engine + SQL query editor + basic alerting + Prometheus proxy backend) — next: F7 (PromQL editor + metric browser) |
 
 The report's riskiest assumptions were validated empirically before any code
 was written, which produced two design corrections early:
@@ -244,6 +244,18 @@ Pinned dependencies (pinned at F0, 2026-08-07):
 > duplicate labels — §10.2). Examples in `examples/alerting/`; automated check
 > `verification/alert_check.py` (7/7 scenarios on Grafana 12.4 :3001 + 13.1
 > :3002: L1 firing/normal/empty, L2 firing/normal/nodata, err-sql).
+>
+> **F6 (2026-08-09):** Prometheus proxy (backend) — `pkg/prom` client
+> (`ValidateURL`, basic/bearer auth, query_range → wide matrix frame, query →
+> wide single-row vector frame, §10.4 step derivation, legend template,
+> response-size bound). `mode: "prometheus"` queries route to the proxy (a
+> disabled proxy → clean 400, never touching Oracle); `CheckHealth` probes
+> `status/buildinfo` when enabled. ConfigEditor **Prometheus** FieldSet (enable,
+> URL, auth type, secret basic user/password + bearer token, TLS skip verify).
+> Verified against a real Prometheus 3.5.0 on Grafana 12.4 + 13.1
+> (`verification/prom_check.py`, 5/5): correct frames in both modes, raw PromQL
+> on `executedQueryString`, and proxied failures never echo the configured token
+> (credentials never logged).
 
 ---
 
@@ -336,16 +348,19 @@ Verify the built plugin against a running matrix Grafana (plugin load, health
 
 ## Roadmap
 
-16 implementation phases in 4 waves (~52–54 person-days). **F5 is done**
+16 implementation phases in 4 waves (~52–54 person-days). **F6 is done**
 (scaffold + Oracle connection core + typed type mapping & frame generation +
-backend macro & variable engine + SQL query editor + basic alerting: pooled
-connection, session timezone pinning, ctx-cancelled queries, read-only guard,
-ORA error parsing, typed NUMBER/DATE/CLOB/NULL fields, wide/long time series,
-`largeNumberMode`, `$__timeFilter`/`$__unixEpochGroup`/`${var:csv}`
-interpolation with fail-closed guards, mode-tab query editor with an Oracle
-monarch language, and float64 time-series value columns + scalar-`COUNT(*)`
-"rows > 0" alert rules verified on Grafana 12.4 + 13.1). The critical path
-going forward is **F6** (Prometheus proxy) and in parallel **F7** (PromQL
+backend macro & variable engine + SQL query editor + basic alerting + the
+Prometheus proxy backend: pooled connection, session timezone pinning,
+ctx-cancelled queries, read-only guard, ORA error parsing, typed
+NUMBER/DATE/CLOB/NULL fields, wide/long time series, `largeNumberMode`,
+`$__timeFilter`/`$__unixEpochGroup`/`${var:csv}` interpolation with
+fail-closed guards, mode-tab query editor with an Oracle monarch language,
+float64 time-series value columns + scalar-`COUNT(*)` "rows > 0" alert rules,
+and a `pkg/prom` proxy client with query_range/query frames, step derivation,
+legend templates, basic/bearer auth and a ConfigEditor Prometheus section —
+all verified on Grafana 12.4 + 13.1, the alert rules and the proxy against a
+real Prometheus 3.5.0). The critical path going forward is **F7** (PromQL
 editor + metric browser).
 
 | Wave | Phases | Scope | Effort |

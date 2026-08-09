@@ -241,6 +241,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`verification/alert_check.py`) that provisions the rules, waits for
   evaluations, and asserts `(state, health)` against the prometheus-compat API —
   7/7 scenarios on Grafana 12.4.0 (:3001) and 13.1.0 (:3002).
+- **F6 — Prometheus proxy (backend)** (report §9): a pure `pkg/prom` client
+  (`ValidateURL`, basic/bearer auth, `query_range` → wide matrix frame,
+  `query` → wide single-row vector frame, §10.4 step derivation, legend
+  template, response-size bound). `mode: "prometheus"` queries are routed to the
+  proxy (disabled proxy → clean 400, never touching Oracle); `CheckHealth`
+  probes `status/buildinfo` when enabled. ConfigEditor gains a **Prometheus**
+  FieldSet (enable, URL, auth type, secret basic user/password + bearer token,
+  TLS skip verify). Verified end-to-end against a real Prometheus 3.5.0 on
+  Grafana 12.4 + 13.1 (`verification/prom_check.py`, 5/5): correct frames in
+  both modes, raw PromQL on `executedQueryString`, and proxied failures never
+  echo the configured token (credentials never logged).
 
 ### Fixed
 

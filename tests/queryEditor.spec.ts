@@ -24,7 +24,8 @@ test('mode is stored per query: switching tabs keeps the editor mode', async ({
   const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
   await panelEditPage.datasource.set(ds.name);
   await page.getByRole('tab', { name: 'Prometheus (PromQL)' }).click();
-  await expect(page.getByText('Prometheus proxy arrives in a later phase')).toBeVisible();
+  // F6: the backend proxy is live; the PromQL editor UI is planned for F7.
+  await expect(page.getByText('Prometheus (PromQL) editor arrives in phase F7')).toBeVisible();
   await page.getByRole('tab', { name: 'Oracle (SQL)' }).click();
   await expect(panelEditPage.getQueryEditorRow('A').getByTestId('query-editor-sql')).toBeVisible();
 });

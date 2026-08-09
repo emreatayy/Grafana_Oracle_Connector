@@ -52,6 +52,13 @@ type OracleSettings struct {
 	// requires the value to match a strict numeric literal before emitting it
 	// bare.
 	NumericVariables []string `json:"numericVariables"`
+	// Prometheus proxy (report §9.1). promEnabled gates the whole proxy; when
+	// false a Prometheus-mode query fails cleanly before any HTTP call. The
+	// credentials for promAuthType live in SecretPluginSettings.
+	PromEnabled       bool   `json:"promEnabled"`
+	PromURL           string `json:"promUrl"`
+	PromAuthType      string `json:"promAuthType"` // none | basic | token
+	PromTlsSkipVerify bool   `json:"promTlsSkipVerify"`
 }
 
 // NumericVariableSet returns the configured numeric variable names as a set for
@@ -68,9 +75,15 @@ func (s *OracleSettings) NumericVariableSet() map[string]bool {
 }
 
 // SecretPluginSettings holds decrypted secure fields (never sent to the
-// browser). o_password is the Oracle password (report §4.3).
+// browser). o_password is the Oracle password (report §4.3); promUser,
+// promPassword and promToken are the Prometheus proxy credentials used when
+// promAuthType is "basic"/"token" (§9.1) — all three are sent to Prometheus
+// over the proxy connection and are never logged.
 type SecretPluginSettings struct {
-	O_Password string `json:"o_password"`
+	O_Password   string `json:"o_password"`
+	PromUser     string `json:"promUser"`
+	PromPassword string `json:"promPassword"`
+	PromToken    string `json:"promToken"`
 }
 
 // PluginSettings is the fully-loaded datasource configuration. OracleSettings
@@ -88,6 +101,16 @@ func (s *PluginSettings) Password() string {
 	return s.Secrets.O_Password
 }
 
+// PromCreds returns the Prometheus proxy credentials for the configured
+// promAuthType (report §9.1). For "basic" it returns the user/password; for
+// "token" it returns ("", token) so the caller adds the Bearer header.
+func (s *PluginSettings) PromCreds() (user, password, token string) {
+	if s.Secrets == nil {
+		return "", "", ""
+	}
+	return s.Secrets.PromUser, s.Secrets.PromPassword, s.Secrets.PromToken
+}
+
 // LoadPluginSettings parses a DataSourceInstanceSettings and applies defaults.
 func LoadPluginSettings(source backend.DataSourceInstanceSettings) (*PluginSettings, error) {
 	settings := PluginSettings{}
@@ -101,7 +124,10 @@ func LoadPluginSettings(source backend.DataSourceInstanceSettings) (*PluginSetti
 
 func loadSecretPluginSettings(source map[string]string) *SecretPluginSettings {
 	return &SecretPluginSettings{
-		O_Password: source["o_password"],
+		O_Password:   source["o_password"],
+		PromUser:     source["promUser"],
+		PromPassword: source["promPassword"],
+		PromToken:    source["promToken"],
 	}
 }
 

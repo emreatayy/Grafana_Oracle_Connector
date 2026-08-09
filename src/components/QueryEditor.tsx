@@ -61,9 +61,9 @@ export function QueryEditor(props: Props) {
 
       <TabContent>
         {mode === 'prometheus' ? (
-          <Alert severity="info" title="Prometheus proxy arrives in a later phase">
-            The Prometheus (PromQL) editor is planned for phase F6/F7. The mode selection is saved with this query; the
-            backend rejects Prometheus-mode queries until then.
+          <Alert severity="info" title="Prometheus (PromQL) editor arrives in phase F7">
+            The backend Prometheus proxy is live (F6) — Prometheus-mode queries are routed to the configured server. The
+            PromQL editor and metric browser are planned for phase F7. The mode selection is saved with this query.
           </Alert>
         ) : (
           <>

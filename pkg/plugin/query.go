@@ -9,17 +9,20 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/data"
 
 	"github.com/emreatayy/oracle-datasource/pkg/convert"
 	"github.com/emreatayy/oracle-datasource/pkg/interpolate"
+	"github.com/emreatayy/oracle-datasource/pkg/prom"
 )
 
 // queryModel is the query payload sent by the frontend (report §4.3). F2 wires
 // SQL, format, an optional explicit time column and a per-query large-number
 // override. F3 adds scopedVars, the dashboard variables attached by
 // applyTemplateVariables (empty for alert queries — §8.3). F4 adds mode, the
-// per-query Oracle/Prometheus editor selection (the Prometheus path is guarded
-// until F6); parameters arrive in later phases.
+// per-query Oracle/Prometheus editor selection. F6 adds the Prometheus fields:
+// promql, instant (query vs query_range), legendFormat and an optional step
+// override.
 type queryModel struct {
 	SQL             string         `json:"sql"`
 	Format          string         `json:"format"`
@@ -27,6 +30,10 @@ type queryModel struct {
 	LargeNumberMode string         `json:"largeNumberMode"`
 	ScopedVars      map[string]any `json:"scopedVars"`
 	Mode            string         `json:"mode"`
+	PromQL          string         `json:"promql"`
+	Instant         bool           `json:"instant"`
+	LegendFormat    string         `json:"legendFormat"`
+	Step            string         `json:"step"`
 }
 
 // readOnlyKeywords are the only words a read-only query may start with (ADR-7).
@@ -51,13 +58,13 @@ func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend
 			fmt.Sprintf("json unmarshal: %v", err.Error()))
 	}
 
-	// F4: the mode is the per-query editor selection (report §14.1). Only the
-	// Oracle SQL path is implemented; a saved Prometheus-mode query must fail
-	// cleanly instead of being executed as SQL against Oracle. Fail closed
-	// before any interpolation or connection attempt.
+	// F4/F6: the mode is the per-query editor selection (report §14.1). A
+	// Prometheus-mode query takes the proxy path (F6); anything else runs SQL
+	// against Oracle. The proxy is gated by promEnabled and the URL validation
+	// in NewClient, so a misconfigured datasource fails cleanly, never touching
+	// Oracle.
 	if qm.Mode == "prometheus" {
-		return backend.ErrDataResponse(backend.StatusBadRequest,
-			"Prometheus mode is not implemented yet (planned in phase F6)")
+		return d.promQuery(ctx, query, qm)
 	}
 
 	// ADR-7: guard the raw SQL first (the interpolated form is re-guarded
@@ -104,6 +111,87 @@ func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend
 	defer func() { _ = rows.Close() }()
 
 	return d.buildFrame(rows, qm)
+}
+
+// promQuery executes a Prometheus-mode query through the proxy (report §9).
+// It fails cleanly when the proxy is disabled or the base URL invalid — never
+// touching Oracle — and otherwise issues query_range (matrix) or query
+// (instant/vector) with the §10.4 step derivation.
+func (d *Datasource) promQuery(ctx context.Context, query backend.DataQuery, qm queryModel) backend.DataResponse {
+	if !d.settings.PromEnabled {
+		return backend.ErrDataResponse(backend.StatusBadRequest,
+			"Prometheus proxy is disabled: enable it in the datasource settings")
+	}
+	if strings.TrimSpace(qm.PromQL) == "" {
+		return backend.ErrDataResponse(backend.StatusBadRequest,
+			"prometheus mode requires a PromQL expression")
+	}
+
+	user, password, token := d.settings.PromCreds()
+	client, err := prom.NewClient(d.settings.PromURL, prom.Options{
+		AuthType:     d.settings.PromAuthType,
+		User:         user,
+		Password:     password,
+		Token:        token,
+		TLSInsecure:  d.settings.PromTlsSkipVerify,
+		Timeout:      time.Duration(d.settings.QueryTimeoutSec) * time.Second,
+		Limit:        d.settings.MaxSeries,
+		LegendFormat: qm.LegendFormat,
+	})
+	if err != nil {
+		// URL/config problems are readable and carry no credentials (§9.1).
+		return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
+	}
+
+	// Bound every query; the request context also propagates panel/alert
+	// cancellation (report §9.5).
+	qCtx := ctx
+	if d.settings.QueryTimeoutSec > 0 {
+		var cancel context.CancelFunc
+		qCtx, cancel = context.WithTimeout(ctx, time.Duration(d.settings.QueryTimeoutSec)*time.Second)
+		defer cancel()
+	}
+
+	var frame *data.Frame
+	if qm.Instant {
+		frame, err = client.QueryInstant(qCtx, qm.PromQL, query.TimeRange.To)
+	} else {
+		step, stepErr := promStep(query, qm)
+		if stepErr != nil {
+			return backend.ErrDataResponse(backend.StatusBadRequest, stepErr.Error())
+		}
+		frame, err = client.QueryRange(qCtx, qm.PromQL, query.TimeRange.From, query.TimeRange.To, step)
+	}
+	if err != nil {
+		return d.queryError(err)
+	}
+
+	if qm.PromQL != "" {
+		if frame.Meta == nil {
+			frame.Meta = &data.FrameMeta{}
+		}
+		frame.Meta.ExecutedQueryString = qm.PromQL
+	}
+	resp := backend.DataResponse{}
+	resp.Frames = append(resp.Frames, frame)
+	return resp
+}
+
+// promStep derives the Prometheus query_range step (report §9.3/§10.4): an
+// explicit per-query step wins, then maxDataPoints, then the request interval,
+// floored at 1s.
+func promStep(query backend.DataQuery, qm queryModel) (time.Duration, error) {
+	if qm.Step != "" {
+		d, err := time.ParseDuration(qm.Step)
+		if err != nil {
+			return 0, fmt.Errorf("invalid step %q: %v", qm.Step, err)
+		}
+		if d < time.Second {
+			return time.Second, nil
+		}
+		return d.Truncate(time.Second), nil
+	}
+	return prom.DeriveStep(query.TimeRange.From, query.TimeRange.To, query.MaxDataPoints, query.Interval), nil
 }
 
 // validateReadOnly enforces the first-keyword guard: skip whitespace and SQL

@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	go_ora "github.com/sijms/go-ora/v2"
@@ -125,17 +128,17 @@ func TestQuery_GuardRejectsBeforeExecution(t *testing.T) {
 	}
 }
 
-// TestQuery_PrometheusModeRejected proves the F4 fail-closed mode guard: a
-// saved Prometheus-mode query is rejected before any connection attempt (the
+// TestQuery_PrometheusDisabled proves the F6 fail-closed gate: a Prometheus-mode
+// query with the proxy disabled is rejected before any connection attempt (the
 // DB here is never reachable), never executed as SQL against Oracle.
-func TestQuery_PrometheusModeRejected(t *testing.T) {
+func TestQuery_PrometheusDisabled(t *testing.T) {
 	ds := newTestDatasource(t)
 	defer ds.Dispose()
 
 	req := &backend.QueryDataRequest{
 		Queries: []backend.DataQuery{{
 			RefID: "A",
-			JSON:  json.RawMessage(`{"mode":"prometheus","sql":"SELECT 1 FROM DUAL"}`),
+			JSON:  json.RawMessage(`{"mode":"prometheus","promql":"up"}`),
 		}},
 	}
 	resp, _ := ds.QueryData(context.Background(), req)
@@ -143,8 +146,157 @@ func TestQuery_PrometheusModeRejected(t *testing.T) {
 	if dr.Status != backend.StatusBadRequest {
 		t.Errorf("status = %v, want StatusBadRequest", dr.Status)
 	}
-	if !strings.Contains(dr.Error.Error(), "Prometheus mode is not implemented") {
-		t.Errorf("error = %q, want Prometheus-not-implemented message", dr.Error)
+	if !strings.Contains(dr.Error.Error(), "Prometheus proxy is disabled") {
+		t.Errorf("error = %q, want disabled message", dr.Error)
+	}
+}
+
+// TestQuery_PrometheusEmptyPromQL rejects a Prometheus-mode query with no PromQL
+// even when the proxy is enabled.
+func TestQuery_PrometheusEmptyPromQL(t *testing.T) {
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+	ds.settings.PromEnabled = true
+
+	req := &backend.QueryDataRequest{
+		Queries: []backend.DataQuery{{
+			RefID: "A",
+			JSON:  json.RawMessage(`{"mode":"prometheus","promql":""}`),
+		}},
+	}
+	resp, _ := ds.QueryData(context.Background(), req)
+	if resp.Responses["A"].Status != backend.StatusBadRequest {
+		t.Errorf("status = %v, want StatusBadRequest", resp.Responses["A"].Status)
+	}
+}
+
+// TestQuery_PrometheusQueryRange routes a mode=prometheus query to the proxy and
+// returns the matrix as a wide time-series frame (report §9.3), with the raw
+// PromQL on ExecutedQueryString and the §10.4 step derived from maxDataPoints.
+func TestQuery_PrometheusQueryRange(t *testing.T) {
+	const body = `{
+	  "status": "success",
+	  "data": {
+	    "resultType": "matrix",
+	    "result": [
+	      {"metric": {"__name__": "up", "job": "prometheus"}, "values": [[100, "1"], [110, "0"]]},
+	      {"metric": {"__name__": "up", "job": "node"}, "values": [[100, "1"], [110, "1"]]}
+	    ]
+	  }
+	}`
+	var path, step string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		step = r.URL.Query().Get("step")
+		if got := r.URL.Query().Get("query"); got != "up" {
+			t.Errorf("query param = %q, want up", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+	ds.settings.PromEnabled = true
+	ds.settings.PromURL = srv.URL
+
+	req := &backend.QueryDataRequest{
+		Queries: []backend.DataQuery{{
+			RefID:         "A",
+			JSON:          json.RawMessage(`{"mode":"prometheus","promql":"up"}`),
+			TimeRange:     backend.TimeRange{From: time.Unix(0, 0), To: time.Unix(3600, 0)},
+			MaxDataPoints: 360,
+		}},
+	}
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("QueryData: %v", err)
+	}
+	dr := resp.Responses["A"]
+	if dr.Error != nil {
+		t.Fatalf("unexpected error: %v", dr.Error)
+	}
+	if len(dr.Frames) != 1 {
+		t.Fatalf("frames = %d, want 1", len(dr.Frames))
+	}
+	if path != "/api/v1/query_range" {
+		t.Errorf("path = %q, want /api/v1/query_range", path)
+	}
+	if step != "10" {
+		t.Errorf("step = %q, want 10", step)
+	}
+	frame := dr.Frames[0]
+	if frame.Meta == nil || frame.Meta.ExecutedQueryString != "up" {
+		t.Errorf("ExecutedQueryString = %+v, want up", frame.Meta)
+	}
+	if len(frame.Fields) != 3 {
+		t.Fatalf("fields = %d, want 3", len(frame.Fields))
+	}
+	if got := frame.Fields[1].Name; got != "up" {
+		t.Errorf("field 1 name = %q, want up", got)
+	}
+}
+
+// TestQuery_PrometheusInstant routes an instant (vector) Prometheus query
+// through the proxy and returns the single-row wide frame (report §9.4).
+func TestQuery_PrometheusInstant(t *testing.T) {
+	const body = `{
+	  "status": "success",
+	  "data": {
+	    "resultType": "vector",
+	    "result": [
+	      {"metric": {"__name__": "up", "instance": "a"}, "value": [100, "1"]},
+	      {"metric": {"__name__": "up", "instance": "b"}, "value": [100, "0"]}
+	    ]
+	  }
+	}`
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		if got := r.URL.Query().Get("time"); got != "123" {
+			t.Errorf("time param = %q, want 123", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+	ds.settings.PromEnabled = true
+	ds.settings.PromURL = srv.URL
+
+	req := &backend.QueryDataRequest{
+		Queries: []backend.DataQuery{{
+			RefID:     "A",
+			JSON:      json.RawMessage(`{"mode":"prometheus","promql":"up","instant":true}`),
+			TimeRange: backend.TimeRange{From: time.Unix(0, 0), To: time.Unix(123, 0)},
+		}},
+	}
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("QueryData: %v", err)
+	}
+	dr := resp.Responses["A"]
+	if dr.Error != nil {
+		t.Fatalf("unexpected error: %v", dr.Error)
+	}
+	if len(dr.Frames) != 1 {
+		t.Fatalf("frames = %d, want 1", len(dr.Frames))
+	}
+	if path != "/api/v1/query" {
+		t.Errorf("path = %q, want /api/v1/query", path)
+	}
+	frame := dr.Frames[0]
+	if frame.Rows() != 1 {
+		t.Errorf("rows = %d, want 1", frame.Rows())
+	}
+	if len(frame.Fields) != 3 {
+		t.Fatalf("fields = %d, want 3", len(frame.Fields))
+	}
+	if got := *frame.Fields[1].At(0).(*float64); got != 1 {
+		t.Errorf("series a = %v, want 1", got)
 	}
 }
 
@@ -180,7 +332,7 @@ func TestQuery_InvalidJSON(t *testing.T) {
 // TestQueryModel_Parse verifies the query model fields (report §4.3) and that
 // the optional ones stay empty when absent.
 func TestQueryModel_Parse(t *testing.T) {
-	raw := json.RawMessage(`{"sql":"SELECT 1 FROM DUAL","format":"time_series","timeColumn":"ts","largeNumberMode":"float","scopedVars":{"host":["web-1"]},"mode":"prometheus"}`)
+	raw := json.RawMessage(`{"sql":"SELECT 1 FROM DUAL","format":"time_series","timeColumn":"ts","largeNumberMode":"float","scopedVars":{"host":["web-1"]},"mode":"prometheus","promql":"up","instant":true,"legendFormat":"{{job}}","step":"15s"}`)
 	var qm queryModel
 	if err := json.Unmarshal(raw, &qm); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -200,6 +352,18 @@ func TestQueryModel_Parse(t *testing.T) {
 	if qm.Mode != "prometheus" {
 		t.Errorf("mode = %q, want prometheus", qm.Mode)
 	}
+	if qm.PromQL != "up" {
+		t.Errorf("promql = %q, want up", qm.PromQL)
+	}
+	if !qm.Instant {
+		t.Errorf("instant = false, want true")
+	}
+	if qm.LegendFormat != "{{job}}" {
+		t.Errorf("legendFormat = %q, want {{job}}", qm.LegendFormat)
+	}
+	if qm.Step != "15s" {
+		t.Errorf("step = %q, want 15s", qm.Step)
+	}
 	host, ok := qm.ScopedVars["host"].([]any)
 	if !ok || len(host) != 1 || host[0] != "web-1" {
 		t.Errorf("scopedVars = %#v, want host=[\"web-1\"]", qm.ScopedVars)
@@ -209,7 +373,7 @@ func TestQueryModel_Parse(t *testing.T) {
 	if err := json.Unmarshal(json.RawMessage(`{"sql":"SELECT 1"}`), &empty); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if empty.Format != "" || empty.TimeColumn != "" || empty.LargeNumberMode != "" || empty.ScopedVars != nil || empty.Mode != "" {
+	if empty.Format != "" || empty.TimeColumn != "" || empty.LargeNumberMode != "" || empty.ScopedVars != nil || empty.Mode != "" || empty.PromQL != "" || empty.Instant || empty.LegendFormat != "" || empty.Step != "" {
 		t.Errorf("optional fields not empty: %+v", empty)
 	}
 }

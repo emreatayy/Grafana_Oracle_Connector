@@ -94,3 +94,27 @@ is given (the datasource is read-only and cannot create tables):
 Run it on **both** matrix Grafanas (12.4 :3001, 13.1 :3002); it cleans up the
 rules, folder, and (with `--oracle`) the table afterwards. Example alert rules
 live in `examples/alerting/`.
+
+## Prometheus proxy check (F6, report §9)
+
+`prom_check.py` verifies the Prometheus proxy against a **real Prometheus** from
+the repo-root matrix. It creates two throwaway datasources — one with the
+configured Prometheus URL (query_range → wide matrix frame + instant → wide
+single-row frame, raw PromQL on `executedQueryString`) and one pointing at an
+unreachable host with a distinctive bearer token (the proxied failure must be a
+readable 500 whose text never echoes the token — the F6 DoD "credentials never
+logged"). Both datasources are deleted afterwards.
+
+```sh
+# Prometheus + Oracle profiles up; plugin built and mounted (see above)
+docker compose --profile prom --profile oracle21 up -d prometheus
+
+# run the check against each matrix Grafana
+./prom_check.py --url http://127.0.0.1:3001
+./prom_check.py --url http://127.0.0.1:3002
+```
+
+Two datasources are used deliberately instead of create → update → query:
+Grafana's server-side plugin-settings cache can keep serving the **old**
+settings for a while after a datasource is updated (verified on 12.4 + 13.1,
+report §21 row 10), so the check does not rely on settings refresh.
