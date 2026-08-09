@@ -3,7 +3,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Grafana](https://img.shields.io/badge/Grafana-%E2%89%A512.3-F46800.svg)](https://grafana.com)
 [![Oracle](https://img.shields.io/badge/Oracle-%E2%89%A512c-red.svg)](https://www.oracle.com/database/)
-[![Status](https://img.shields.io/badge/status-F4%20done-brightgreen.svg)](#status)
+[![Status](https://img.shields.io/badge/status-F5%20done-brightgreen.svg)](#status)
 [![CI](https://github.com/emreatayy/Grafana_Oracle_Connector/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
 A **Grafana data source plugin for Oracle Database** with an optional
@@ -45,8 +45,8 @@ procedures) — all driven from the query editor.
 | Stage | State |
 |---|---|
 | Design | ✅ Complete — `docs/project-report.md` (v2) |
-| Empirical verification | ✅ **8 of 8** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1) — see `verification/` |
-| Implementation | ✅ **F4 done** (connection core + typed mapping + macro & variable engine + SQL query editor) — next: F5 (basic alerting) / F6 (Prometheus proxy) |
+| Empirical verification | ✅ **9 of 9** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1) — see `verification/` |
+| Implementation | ✅ **F5 done** (connection core + typed mapping + macro & variable engine + SQL query editor + basic alerting) — next: F6 (Prometheus proxy) |
 
 The report's riskiest assumptions were validated empirically before any code
 was written, which produced two design corrections early:
@@ -236,6 +236,14 @@ Pinned dependencies (pinned at F0, 2026-08-07):
 > (`src/language/oracle.ts`: ANSI + Oracle keywords, built-in functions, `||`).
 > Time-column dropdown (Auto + custom text; metadata list in F9). Verified:
 > query-editor e2e specs + Grafana 12.4/13.1 plugin check 6/6.
+>
+> **F5 (2026-08-08):** Unified Alerting (SQL, basic) — **time-series value
+> columns are now float64** in time-series format (Grafana's alerting SSE
+> rejects `*int64`), fixing Layer 1 time-series alerts; Layer 2 "rows > 0" uses
+> a **scalar** `SELECT COUNT(*)` → `Reduce(count)` (a multi-row table errors with
+> duplicate labels — §10.2). Examples in `examples/alerting/`; automated check
+> `verification/alert_check.py` (7/7 scenarios on Grafana 12.4 :3001 + 13.1
+> :3002: L1 firing/normal/empty, L2 firing/normal/nodata, err-sql).
 
 ---
 
@@ -328,15 +336,17 @@ Verify the built plugin against a running matrix Grafana (plugin load, health
 
 ## Roadmap
 
-16 implementation phases in 4 waves (~52–54 person-days). **F4 is done**
+16 implementation phases in 4 waves (~52–54 person-days). **F5 is done**
 (scaffold + Oracle connection core + typed type mapping & frame generation +
-backend macro & variable engine + SQL query editor: pooled connection, session
-timezone pinning, ctx-cancelled queries, read-only guard, ORA error parsing,
-typed NUMBER/DATE/CLOB/NULL fields, wide/long time series, `largeNumberMode`,
-`$__timeFilter`/`$__unixEpochGroup`/`${var:csv}` interpolation with fail-closed
-guards, mode-tab query editor with an Oracle monarch language). The critical
-path going forward is **F5** (basic alerting) and in parallel **F6** (Prometheus
-proxy).
+backend macro & variable engine + SQL query editor + basic alerting: pooled
+connection, session timezone pinning, ctx-cancelled queries, read-only guard,
+ORA error parsing, typed NUMBER/DATE/CLOB/NULL fields, wide/long time series,
+`largeNumberMode`, `$__timeFilter`/`$__unixEpochGroup`/`${var:csv}`
+interpolation with fail-closed guards, mode-tab query editor with an Oracle
+monarch language, and float64 time-series value columns + scalar-`COUNT(*)`
+"rows > 0" alert rules verified on Grafana 12.4 + 13.1). The critical path
+going forward is **F6** (Prometheus proxy) and in parallel **F7** (PromQL
+editor + metric browser).
 
 | Wave | Phases | Scope | Effort |
 |---|---|---|---|

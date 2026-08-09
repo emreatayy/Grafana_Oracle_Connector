@@ -236,7 +236,7 @@ func longFrame(names []string, kinds []Kind, strIdxs []int, timeIdx, valueIdx in
 		fields = append(fields, fieldFromColumn(names[i], KindString, columnAt(rows, i), nil))
 	}
 	fields = append(fields, fieldFromColumn(names[timeIdx], KindTime, columnAt(rows, timeIdx), nil))
-	fields = append(fields, fieldFromColumn(names[valueIdx], kinds[valueIdx], columnAt(rows, valueIdx), nil))
+	fields = append(fields, timeSeriesValueField(names[valueIdx], kinds[valueIdx], columnAt(rows, valueIdx), nil))
 
 	frame := data.NewFrame("oracle", fields...)
 	frame.Meta = &data.FrameMeta{Type: data.FrameTypeTimeSeriesLong}
@@ -287,7 +287,7 @@ func wideFrame(names []string, kinds []Kind, strIdxs []int, timeIdx int, valueId
 		fieldFromColumn(names[timeIdx], KindTime, columnAt(rows, timeIdx), nil),
 	}
 	for _, i := range valueIdxs {
-		fields = append(fields, fieldFromColumn(names[i], kinds[i], columnAt(rows, i), valueLabels))
+		fields = append(fields, timeSeriesValueField(names[i], kinds[i], columnAt(rows, i), valueLabels))
 	}
 	for _, i := range extraStr {
 		fields = append(fields, fieldFromColumn(names[i], KindString, columnAt(rows, i), nil))
@@ -316,6 +316,49 @@ func singleDistinctString(c int, rows [][]any) (string, bool) {
 		}
 	}
 	return first, sawFirst
+}
+
+// timeSeriesValueField builds a time-series value field. Grafana's alerting SSE
+// and dataplane readers require time-series value columns to be float64 (report
+// §10.1), so int and bool columns are coerced here regardless of the table-format
+// typing (report §6.1 rules 1/4 keep int64/bool in tables). Large NUMBER columns
+// already classify as float in time series (ADR-8), so they need no coercion.
+func timeSeriesValueField(name string, kind Kind, col []any, labels data.Labels) *data.Field {
+	switch kind {
+	case KindFloat:
+		out := make([]*float64, len(col))
+		for i, v := range col {
+			if n, ok := v.(float64); ok {
+				out[i] = &n
+			}
+		}
+		return data.NewField(name, labels, out)
+	case KindInt:
+		out := make([]*float64, len(col))
+		for i, v := range col {
+			if n, ok := v.(int64); ok {
+				f := float64(n)
+				out[i] = &f
+			}
+		}
+		return data.NewField(name, labels, out)
+	case KindBool:
+		out := make([]*float64, len(col))
+		for i, v := range col {
+			if b, ok := v.(bool); ok {
+				f := 0.0
+				if b {
+					f = 1.0
+				}
+				out[i] = &f
+			}
+		}
+		return data.NewField(name, labels, out)
+	default:
+		// Not expected for time-series value columns; fall back to the generic
+		// builder rather than failing the whole frame.
+		return fieldFromColumn(name, kind, col, labels)
+	}
 }
 
 // fieldFromColumn builds a concrete SDK field from a column of values

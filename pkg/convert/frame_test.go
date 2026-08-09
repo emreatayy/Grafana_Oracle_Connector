@@ -18,6 +18,10 @@ func fltCol(name string) ColumnInfo {
 	return ColumnInfo{Name: name, ScanType: reflect.TypeOf(float64(0)), Precision: 10, Scale: 2}
 }
 
+func boolCol(name string) ColumnInfo {
+	return ColumnInfo{Name: name, ScanType: reflect.TypeOf(false)}
+}
+
 func strCol(name string) ColumnInfo {
 	return ColumnInfo{Name: name, ScanType: reflect.TypeOf("")}
 }
@@ -169,6 +173,61 @@ func TestBuildFrame_TimeSeriesLong(t *testing.T) {
 	}
 }
 
+func TestBuildFrame_TimeSeriesValueColumnsFloat64(t *testing.T) {
+	// Grafana alerting SSE and the dataplane reader need float64 time-series
+	// value columns (report §10.1); int/bool value columns must be coerced in
+	// time-series format even though tables keep int64/bool (§6.1 rules 1/4).
+	cols := []ColumnInfo{timeCol("t"), intCol("cpu", 10), fltCol("mem"), boolCol("up"), strCol("host")}
+	rows := [][]any{
+		{ts(9, 0), int64(3), 0.5, true, "web-1"},
+		{ts(9, 1), nil, 0.6, false, "web-1"}, // NULL int + false bool
+	}
+	frame, err := BuildFrame(cols, rows, Options{Format: FormatTimeSeries})
+	if err != nil {
+		t.Fatalf("BuildFrame: %v", err)
+	}
+	// wide: time + cpu + mem + up (host folded into labels)
+	if len(frame.Fields) != 4 {
+		t.Fatalf("fields = %d, want 4", len(frame.Fields))
+	}
+	for i, want := range []data.FieldType{
+		data.FieldTypeNullableFloat64, // cpu (int coerced)
+		data.FieldTypeNullableFloat64, // mem
+		data.FieldTypeNullableFloat64, // up (bool coerced)
+	} {
+		got := frame.Fields[i+1].Type()
+		if got != want {
+			t.Errorf("field %d type = %v, want %v", i+1, got, want)
+		}
+	}
+	if got := *frame.Fields[1].At(0).(*float64); got != 3 {
+		t.Errorf("cpu[0] = %v, want 3", got)
+	}
+	if got := frame.Fields[1].At(1); got != (*float64)(nil) {
+		t.Errorf("cpu[1] = %v, want nil (NULL preserved)", got)
+	}
+	if got := *frame.Fields[3].At(0).(*float64); got != 1 {
+		t.Errorf("up[0] = %v, want 1 (true coerced)", got)
+	}
+	if got := *frame.Fields[3].At(1).(*float64); got != 0 {
+		t.Errorf("up[1] = %v, want 0 (false coerced)", got)
+	}
+
+	// long: single value column + string dim → [host, t, v]; v must be float64.
+	longCols := []ColumnInfo{timeCol("t"), strCol("host"), intCol("v", 10)}
+	longRows := [][]any{{ts(9, 0), "web-1", int64(7)}}
+	longFrame, err := BuildFrame(longCols, longRows, Options{Format: FormatTimeSeries})
+	if err != nil {
+		t.Fatalf("BuildFrame long: %v", err)
+	}
+	if got := longFrame.Fields[2].Type(); got != data.FieldTypeNullableFloat64 {
+		t.Errorf("long value type = %v, want NullableFloat64", got)
+	}
+	if got := *longFrame.Fields[2].At(0).(*float64); got != 7 {
+		t.Errorf("long v[0] = %v, want 7", got)
+	}
+}
+
 func TestBuildFrame_CardinalityGuard(t *testing.T) {
 	cols := []ColumnInfo{timeCol("t"), strCol("host"), intCol("v", 10)}
 	rows := [][]any{
@@ -248,8 +307,8 @@ func TestBuildFrame_NilTimeSkipped(t *testing.T) {
 	if frame.Rows() != 1 {
 		t.Errorf("rows = %d, want 1 (NULL-time row skipped)", frame.Rows())
 	}
-	if got := *frame.Fields[1].At(0).(*int64); got != 2 {
-		t.Errorf("v[0] = %d, want 2", got)
+	if got := *frame.Fields[1].At(0).(*float64); got != 2 {
+		t.Errorf("v[0] = %v, want 2 (time-series value columns are float64 for alerting)", got)
 	}
 }
 

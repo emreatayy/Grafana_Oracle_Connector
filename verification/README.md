@@ -72,3 +72,25 @@ Checks performed (idempotent — the test alert rule + folder are deleted after)
 Requires Python 3 stdlib only; `--url/--user/--password/--plugin-id/
 --datasource-name/--timeout` are overridable and environment variables
 `GRAFANA_URL/GRAFANA_USER/GRAFANA_PASSWORD` are honored.
+
+## Alerting check (F5, report §10)
+
+`alert_check.py` provisions a set of Unified Alerting rules against a running
+Grafana, waits for evaluations, and asserts `(state, health)` the way the
+prometheus-compat rules API reports them (§10.5). 7 scenarios: Layer 1
+time-series firing/normal/empty, Layer 2 scalar-`COUNT(*)` firing/normal/nodata,
+and a broken query. It seeds the `f5_alert` table via SQL*Plus when `--oracle`
+is given (the datasource is read-only and cannot create tables):
+
+```sh
+# host sqlplus (Oracle instant client), or the docker wrapper below
+./alert_check.py --url http://127.0.0.1:3002 \
+    --oracle "SYSTEM/verif_password@//localhost:1521/XEPDB1"
+./alert_check.py --url http://127.0.0.1:3001 \
+    --oracle "SYSTEM/verif_password@//localhost:1521/XEPDB1" \
+    --oracle-cmd "docker exec -i f0_oracle21 /opt/oracle/product/21c/dbhomeXE/bin/sqlplus"
+```
+
+Run it on **both** matrix Grafanas (12.4 :3001, 13.1 :3002); it cleans up the
+rules, folder, and (with `--oracle`) the table afterwards. Example alert rules
+live in `examples/alerting/`.

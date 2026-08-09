@@ -234,9 +234,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on `DataSourceWithBackend` (13.x). The plugin floor is 12.3, so the query
   editor reads both defensively (the F4 e2e run covered only 13.1 and missed
   the 12.4 crash; the query-editor spec now also passes on 12.4).
+- **F5 — Unified Alerting (SQL, basic)** (report §10): Layer 1 (time-series →
+  `Reduce(last)` → `Is above`) and Layer 2 ("rows > 0" → scalar `SELECT COUNT(*)`
+  → `Reduce(count)` → `Is above(0)`) alert rules verified end-to-end. New
+  example templates (`examples/alerting/`) and a repeatable check script
+  (`verification/alert_check.py`) that provisions the rules, waits for
+  evaluations, and asserts `(state, health)` against the prometheus-compat API —
+  7/7 scenarios on Grafana 12.4.0 (:3001) and 13.1.0 (:3002).
 
 ### Fixed
 
+- **Time-series alerting was broken** (report §10.1 Layer 1): time-series value
+  columns were emitted as `*int64` / `*bool`, and Grafana's alerting SSE +
+  dataplane readers require **float64** — every time-series alert rule failed
+  with "no float64 value column found in frame oracle". `convert` now coerces
+  int/bool value columns to `NullableFloat64` in time-series format
+  (`timeSeriesValueField`), while tables keep int64/bool (report §6.1). Verified
+  by unit tests and the F5 alert check (L1-firing is green on both versions).
 - Query editor crashed on Grafana **12.4** with
   `TypeError: undefined is not an object (evaluating 'e.datasource.datasourceInstanceSettings.jsonData')`
   — `datasourceInstanceSettings` exists only on the 13.x

@@ -518,15 +518,22 @@ ALTER SESSION SET NLS_COMP = 'BINARY'
 
 ### 10.2 Layer 2 Correct Reduce (important)
 
-The "rows > 0" pattern must use **`count`** as the reduce step (not `last` — on a multi-row table the last value is meaningless). This order is written explicitly in the example templates:
+The "rows > 0" pattern must use **`count`** as the reduce step (not `last` — on a multi-row table the last value is meaningless). **Crucially, the query must return a single scalar row — `SELECT COUNT(*)` — not one row per matching record.** The multi-row variant is broken at the Grafana platform level, verified empirically on 12.4 + 13.1 (2026-08-08):
+
+- A multi-row result with no string (label) columns becomes a **vector of `mathexp.Number`s with identical `nil` labels** — the expression engine's `Reduce` command passes `Number` inputs through **unchanged** (it only reduces `Series`), so `count` never counts them, and the threshold step then errors: *"frame cannot uniquely be identified by its labels: has duplicate results with labels {}"*.
+- The **scalar** `SELECT COUNT(*)` returns exactly one Number → `Reduce(count)` → `Is above 0`. A single row yields **1 → firing**; zero matching rows yield **0 → Normal**; an empty table (no rows at all) is `NoData` (health `nodata`).
+
+Working pattern (used in the F5 example templates, §18):
 
 ```
-SELECT 1 AS alert_flag
+SELECT COUNT(*) AS alert_flag
 FROM   my_tab
 WHERE  used_percent > 85
 AND    $__timeFilter(ts);
 -> Reduce: count -> Threshold: Is above 0
 ```
+
+To see *which* rows matched, alert on a time-series aggregate instead (`SELECT ts, used_percent …` with `Format: time_series` → `Reduce(last)`), where the duplicate-label problem cannot occur.
 
 ### 10.3 Macro Safety in the Alerting Context
 
@@ -541,8 +548,9 @@ Grafana sends `IntervalMs=1000ms` **by default** in alert queries → `$__interv
 
 ### 10.5 Error Behavior
 
-- If an alert query returns an error: `ErrorAlertState = Error` (warning, not `pending`). Documented and verified by test.
-- Empty result: "no data" → alert evaluation state `nodata` (user-defined).
+- If an alert query returns an error, the rule's **execution-error state** follows `execErrState` (`Error` by default): the rule enters the Error state internally and fires no alert. **Verified** on 12.4 + 13.1 (2026-08-08).
+- Empty result → the rule's **no-data state** follows `noDataState` (`NoData` by default).
+- **How the prometheus-compat API surfaces these** (`GET /api/prometheus/grafana/api/v1/rules`): the public `state` field maps Error and NoData to the single string `"inactive"` (only Alerting/Pending/Recovering have distinct states), so the rule **`health`** field is what distinguishes them — `health: "error"` for a failing query, `health: "nodata"` for no data, `health: "ok"` for a normal evaluation. A query that fails against the datasource (e.g. missing table) therefore appears as `state="inactive" + health="error"`, and with `execErrState=Alerting` as `state="firing"`. Alert-rule verification must assert on `(state, health)` jointly, never `state` alone (the F5 check script does exactly this).
 
 ### 10.6 plugin.json Flags
 
@@ -787,6 +795,7 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 **F5 — Alerting (SQL, basic)** · 3 pg
 - Layer 1 + Layer 2 patterns; `Reduce(count)`; the interval/maxDataPoints formula (10.4); error state.
 - **DoD:** Time-series and "rows>0" alert rules work on Grafana 12.4 + 13.1 (e2e).
+- **Status (2026-08-08):** ✅ **done.** **Core bug fixed:** time-series value columns are now **float64** (`convert.timeSeriesValueField` coerces int/bool in time-series format) — Grafana's alerting SSE/dataplane readers previously rejected `*int64` columns ("no float64 value column found in frame"), breaking every Layer 1 rule. Layer 2 verified to require a **scalar** `SELECT COUNT(*)` (the report's earlier multi-row pattern errors with duplicate labels — see §10.2, documented). Interval formula (§10.4) already feeds `$__interval`; error/NoData semantics verified against the prometheus-compat API (§10.5). **DoD met — verified end-to-end on Grafana 12.4.0 (:3001) and 13.1.0 (:3002), 6/6 alert scenarios** (L1 firing/normal, L2 firing/normal/nodata, err-sql) via the committed `verification/alert_check.py` and example rules in `examples/alerting/`.
 
 ### Wave B — Prometheus
 
@@ -894,6 +903,7 @@ Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0)
 | 6 | **✅ Verified (2026-08-07, `data/sqlutil`):** sqlutil has **no** variable interpolation — `Interpolate` is macro-only and the `Query` model has no variables field (`WithVariables` does not exist). Multi-value `IN(...)` + quoting + `${var:csv}` are built by us (§8.2). | 8.2 / F3 |
 | 7 | **✅ Verified (2026-08-07, `WE8ISO8859P9`):** go-ora round-trips Turkish text exactly (parameterized insert + read-back + literal match; no U+FFFD). `SetStringConverter` **not** needed for this charset. CJK (`ZHS16GBK`) still untested. | 6.4 |
 | 8 | **✅ Verified (2026-08-07):** go-ora `ExecContext` runs anonymous `BEGIN…END` reliably — `DBMS_SCHEDULER.ENABLE`/`DISABLE`, job-state read-back, procedure call all work | 12 |
+| 9 | **✅ Verified (2026-08-08, F5 end-to-end on Grafana 12.4.0 :3001 + 13.1.0 :3002, 7/7 scenarios via `verification/alert_check.py`):** (a) a time-series rule with `Reduce(last)` fires — proof that time-series value columns are now float64 (the `*int64` frame was rejected by alerting SSE); (b) **Layer 2 requires a scalar `SELECT COUNT(*)`** — a multi-row table (`SELECT 1 AS alert_flag …`) errors with duplicate labels `{}` in the threshold step; `COUNT(*)` always returns one row (0 over an empty scan) → Normal, never NoData; NoData needs a row-returning query with zero matches (`SELECT 1 … WHERE no match`); an **empty time-series** frame is NOT NoData (`Reduce(last)` = NaN → threshold false → Normal); (c) a broken query with `execErrState=Error` shows `state="inactive" + health="error"` and with `execErrState=Alerting` shows `state="firing"` — the prometheus-compat API collapses Error/NoData into "inactive", so verification must assert `(state, health)` jointly | 10.2 / 10.5 / F5 |
 
 **Open decisions (with recommended defaults):**
 
