@@ -73,14 +73,17 @@ Requires Python 3 stdlib only; `--url/--user/--password/--plugin-id/
 --datasource-name/--timeout` are overridable and environment variables
 `GRAFANA_URL/GRAFANA_USER/GRAFANA_PASSWORD` are honored.
 
-## Alerting check (F5, report §10)
+## Alerting check (F5 + F7, report §10 + §18)
 
 `alert_check.py` provisions a set of Unified Alerting rules against a running
 Grafana, waits for evaluations, and asserts `(state, health)` the way the
-prometheus-compat rules API reports them (§10.5). 7 scenarios: Layer 1
+prometheus-compat rules API reports them (§10.5). 8 scenarios: Layer 1
 time-series firing/normal/empty, Layer 2 scalar-`COUNT(*)` firing/normal/nodata,
-and a broken query. It seeds the `f5_alert` table via SQL*Plus when `--oracle`
-is given (the datasource is read-only and cannot create tables):
+a broken query, and (F7) a **Prometheus-mode** rule `up > 0` on the provisioned
+prom-only datasource from `provisioning/datasources/datasources-prom.yml` —
+the F7 DoD "panel + alert" (needs the matrix Prometheus up). It seeds the
+`f5_alert` table via SQL*Plus when `--oracle` is given (the datasource is
+read-only and cannot create tables):
 
 ```sh
 # host sqlplus (Oracle instant client), or the docker wrapper below
@@ -95,7 +98,7 @@ Run it on **both** matrix Grafanas (12.4 :3001, 13.1 :3002); it cleans up the
 rules, folder, and (with `--oracle`) the table afterwards. Example alert rules
 live in `examples/alerting/`.
 
-## Prometheus proxy check (F6, report §9)
+## Prometheus proxy check (F6 + F7, report §9)
 
 `prom_check.py` verifies the Prometheus proxy against a **real Prometheus** from
 the repo-root matrix. It creates two throwaway datasources — one with the
@@ -103,7 +106,11 @@ configured Prometheus URL (query_range → wide matrix frame + instant → wide
 single-row frame, raw PromQL on `executedQueryString`) and one pointing at an
 unreachable host with a distinctive bearer token (the proxied failure must be a
 readable 500 whose text never echoes the token — the F6 DoD "credentials never
-logged"). Both datasources are deleted afterwards.
+logged"). **F7 adds the metric-browser resources**, proxied through the plugin
+`CallResource` handler: `label/__name__/values` (metric list), `labels`, and
+`series?match[]=up`, plus a resource → instant-query round trip (metric browser
+→ PromQL → panel) and a clean 404 for an unknown resource path. Both datasources
+are deleted afterwards.
 
 ```sh
 # Prometheus + Oracle profiles up; plugin built and mounted (see above)
@@ -117,4 +124,7 @@ docker compose --profile prom --profile oracle21 up -d prometheus
 Two datasources are used deliberately instead of create → update → query:
 Grafana's server-side plugin-settings cache can keep serving the **old**
 settings for a while after a datasource is updated (verified on 12.4 + 13.1,
-report §21 row 10), so the check does not rely on settings refresh.
+report §21 row 10), so the check does not rely on settings refresh. The
+provisioned `prometheus-datasource` (F7, for the alerting + e2e paths) is
+created on first Grafana start from `provisioning/datasources/datasources-prom.yml`
+— restart the Grafana after adding it so it gets provisioned.

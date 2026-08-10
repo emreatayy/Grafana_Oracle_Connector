@@ -4,6 +4,14 @@ import { DataSourceWithBackend } from '@grafana/runtime';
 import { MyQuery, MyDataSourceOptions, DEFAULT_QUERY } from './types';
 import { OracleVariableSupport } from './variableSupport';
 
+// Shape of a Prometheus API v1 envelope returned by the plugin resource proxy
+// (report §9.2); `data` is typed per endpoint.
+export interface PromAPIResponse<T> {
+  status: string;
+  data: T;
+  error?: string;
+}
+
 export class DataSource extends DataSourceWithBackend<MyQuery, MyDataSourceOptions> {
   constructor(instanceSettings: DataSourceInstanceSettings<MyDataSourceOptions>) {
     super(instanceSettings);
@@ -11,6 +19,33 @@ export class DataSource extends DataSourceWithBackend<MyQuery, MyDataSourceOptio
     // has no Query field and the preview never runs. With it, the variable
     // editor reuses the F4 SQL editor and the standard backend query path.
     this.variables = new OracleVariableSupport();
+  }
+
+  // Prometheus metric-browser resources (F7). Every browse call is proxied
+  // through the plugin's CallResource handler — the browser must never talk to
+  // Prometheus directly (credentials live server-side, CORS would block it).
+
+  // All metric names (GET /api/v1/label/__name__/values).
+  async getPromMetricNames(): Promise<string[]> {
+    const resp = await this.getResource<PromAPIResponse<string[]>>('prometheus/label/__name__/values');
+    return resp?.data ?? [];
+  }
+
+  // Values for a label (F8 label_values variables). Label names are server-side
+  // validated to [a-zA-Z0-9_:].
+  async getPromLabelValues(label: string): Promise<string[]> {
+    const resp = await this.getResource<PromAPIResponse<string[]>>(
+      `prometheus/label/${encodeURIComponent(label)}/values`
+    );
+    return resp?.data ?? [];
+  }
+
+  // Series matching a selector — label names/values for the metric browser.
+  async getPromSeries(match: string): Promise<Array<Record<string, string>>> {
+    const resp = await this.getResource<PromAPIResponse<Array<Record<string, string>>>>('prometheus/series', {
+      'match[]': match,
+    });
+    return resp?.data ?? [];
   }
 
   getDefaultQuery(_: CoreApp): Partial<MyQuery> {

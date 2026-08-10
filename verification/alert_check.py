@@ -15,6 +15,10 @@ Scenarios (all use a 1 h relative time range), asserted on (state, health):
   L2-normal   scalar COUNT(*) with no matching rows (metric='nope') -> inactive, health ok
   L2-nodata   SELECT 1 with no matching rows (empty TABLE)       -> inactive, health nodata
   err-sql     SELECT * FROM missing_table_xyz                    -> inactive, health error
+  Prom-firing Prometheus-mode time series `up` + Reduce(last) + >0 -> firing, health ok
+              (F7 DoD "panel + alert": a metric-browser PromQL alert rule
+              evaluates through the proxy; needs the provisioned
+              prometheus-datasource from datasources-prom.yml + matrix Prom)
 
 The seed table `f5_alert` is created and dropped via SQL*Plus when `--oracle`
 is given (the datasource is read-only, so the script itself cannot write).
@@ -42,6 +46,7 @@ FOLDER = "f5-check-folder"
 GROUP = "f5-check"
 TABLE = "f5_alert"
 PLUGIN_ID = "emreatayy-oracle-datasource"
+PROM_DS_NAME = "prometheus-datasource"  # provisioning/datasources/datasources-prom.yml
 SLEEP_STEP_S = 5
 POLL_S = 45
 # (sql, format, reducer, threshold-op, params, expected state, expected health)
@@ -60,6 +65,14 @@ SCENARIOS = {
     "L2-nodata": ("SELECT 1 AS alert_flag FROM f5_alert WHERE metric='nope' AND $__timeFilter(ts)", "table", "count", "gt", [0], "inactive", "nodata"),
     "err-sql": ("SELECT * FROM missing_table_xyz", "table", "count", "gt", [0], "inactive", "error"),
 }
+
+# Prometheus-mode scenarios (F7 DoD "panel + alert"). Run through the
+# provisioned prometheus-datasource; `up` is always present on a live Prometheus.
+PROM_SCENARIOS = {
+    "Prom-firing": ("up", "time_series", "last", "gt", [0], "firing", "ok"),
+}
+
+ALL_SCENARIOS = {**SCENARIOS, **PROM_SCENARIOS}
 
 
 def api(base, auth, method, path, body=None):
@@ -118,6 +131,26 @@ def main():
                           "sql": sql, "format": fmt, "intervalMs": 15000, "maxDataPoints": 200},
                 "relativeTimeRange": {"from": 3600, "to": 0}}
 
+    # F7: resolve the provisioned prometheus-datasource (datasources-prom.yml).
+    # The plugin requires Oracle settings to load, but this instance is only
+    # ever queried in Prometheus mode, so `up` runs through the proxy.
+    st, pd = api(base, auth, "GET", f"/api/datasources/name/{PROM_DS_NAME}")
+    prom_uid = (pd or {}).get("uid") if isinstance(pd, dict) else None
+    if st != 200 or not prom_uid:
+        print(f"  [FAIL] prometheus datasource {PROM_DS_NAME} not found (HTTP {st}) — "
+              "start the matrix Prometheus and restart Grafana to re-provision "
+              "datasources-prom.yml")
+        sys.exit(1)
+    print(f"  [..] prometheus datasource {PROM_DS_NAME} = {prom_uid}")
+
+    def pdsq(refid, promql, fmt):
+        return {"refId": refid, "datasourceUid": prom_uid, "queryType": "",
+                "model": {"refId": refid,
+                          "datasource": {"type": PLUGIN_ID, "uid": prom_uid},
+                          "mode": "prometheus", "promql": promql, "format": fmt,
+                          "intervalMs": 15000, "maxDataPoints": 200},
+                "relativeTimeRange": {"from": 3600, "to": 0}}
+
     def expr(refid, typ, expression, reducer=None, ev=None, params=None):
         m = {"refId": refid, "type": typ, "expression": expression,
              "datasource": {"type": "__expr__", "uid": "__expr__"}}
@@ -154,18 +187,25 @@ def main():
         sys.exit(1)
 
     uids = {}
-    for name, (sql, fmt, red, ev, params, _st, _hl) in SCENARIOS.items():
+
+    def provision(name, data):
         body = {"title": f"F5-{name}", "folderUID": FOLDER, "ruleGroup": GROUP,
                 "condition": "C", "for": "0m", "noDataState": "NoData", "execErrState": "Error",
                 "isPaused": False,
-                "data": [dsq("A", sql, fmt), expr("B", "reduce", "A", reducer=red),
-                         expr("C", "threshold", "B", ev=ev, params=params)]}
+                "data": data}
         st, r = api(base, auth, "POST", "/api/v1/provisioning/alert-rules", body)
         if st == 201:
             uids[name] = r.get("uid")
         else:
             print(f"  [FAIL] create {name}: {st} {str(r)[:200]}")
-    check(f"provision", len(uids) == len(SCENARIOS), f"{len(uids)}/{len(SCENARIOS)} rules")
+
+    for name, (sql, fmt, red, ev, params, _st, _hl) in SCENARIOS.items():
+        provision(name, [dsq("A", sql, fmt), expr("B", "reduce", "A", reducer=red),
+                         expr("C", "threshold", "B", ev=ev, params=params)])
+    for name, (promql, fmt, red, ev, params, _st, _hl) in PROM_SCENARIOS.items():
+        provision(name, [pdsq("A", promql, fmt), expr("B", "reduce", "A", reducer=red),
+                         expr("C", "threshold", "B", ev=ev, params=params)])
+    check(f"provision", len(uids) == len(ALL_SCENARIOS), f"{len(uids)}/{len(ALL_SCENARIOS)} rules")
 
     # 2. Fast group interval (10 s is the scheduler minimum) ------------------
     prov_rules = [r for r in (api(base, auth, "GET", "/api/v1/provisioning/alert-rules")[1] or [])
@@ -176,7 +216,7 @@ def main():
         print(f"  [FAIL] group interval: {st} {str(g)[:200]}")
 
     # 3. Poll the rules API and record state transitions ----------------------
-    history = {n: [] for n in SCENARIOS}
+    history = {n: [] for n in ALL_SCENARIOS}
     t0 = time.time()
     while time.time() - t0 < POLL_S:
         time.sleep(SLEEP_STEP_S)
@@ -187,12 +227,12 @@ def main():
                 n = r.get("name", "")
                 if n.startswith("F5-"):
                     snap[n[3:]] = (r.get("state"), r.get("health"))
-        for n in SCENARIOS:
+        for n in ALL_SCENARIOS:
             if n in snap and (not history[n] or history[n][-1] != snap[n]):
                 history[n].append((round(time.time() - t0), snap[n]))
 
     print("\n  state history (s -> (state, health)):")
-    for n in sorted(SCENARIOS):
+    for n in sorted(ALL_SCENARIOS):
         print(f"    {n:10} {history[n] if history[n] else 'NO EVAL'}")
 
     # 4. Final assertions: (state, health) jointly ----------------------------
@@ -205,9 +245,9 @@ def main():
                 snap[n[3:]] = (r.get("state"), r.get("health"))
 
     print("\n  final:")
-    for name in sorted(SCENARIOS):
+    for name in sorted(ALL_SCENARIOS):
         got = snap.get(name, ("?", "?"))
-        want_state, want_health = SCENARIOS[name][5], SCENARIOS[name][6]
+        want_state, want_health = ALL_SCENARIOS[name][5], ALL_SCENARIOS[name][6]
         state_ok = got[0] == want_state
         health_ok = got[1] == want_health
         check(f"{name}",

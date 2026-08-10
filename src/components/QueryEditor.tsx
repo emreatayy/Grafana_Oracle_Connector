@@ -1,10 +1,12 @@
 import React from 'react';
-import { Alert, Button, Select, Stack, Tab, TabsBar, TabContent } from '@grafana/ui';
+import { Button, Input, Select, Stack, Switch, Tab, TabsBar, TabContent } from '@grafana/ui';
 import { DataSourceInstanceSettings, QueryEditorProps, SelectableValue } from '@grafana/data';
 import { EditorField, EditorRow, SQLEditor } from '@grafana/plugin-ui';
 
 import { DataSource } from '../datasource';
 import { oracleSQLLanguage } from '../language/oracle';
+import { promQLSQLLanguage } from '../language/promql';
+import { MetricBrowser } from './MetricBrowser';
 import { MyDataSourceOptions, MyQuery, QueryFormat, QueryMode } from '../types';
 
 type Props = QueryEditorProps<DataSource, MyQuery, MyDataSourceOptions>;
@@ -52,6 +54,32 @@ export function QueryEditor(props: Props) {
     onChange({ ...query, timeColumn: value.value || undefined });
   };
 
+  const onPromQLChange = (promql: string) => {
+    onChange({ ...query, promql });
+  };
+
+  const onInstantChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    onChange({ ...query, instant: e.currentTarget.checked });
+  };
+
+  const onLegendFormatChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    onChange({ ...query, legendFormat: e.currentTarget.value });
+  };
+
+  const onStepChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    onChange({ ...query, step: e.currentTarget.value });
+  };
+
+  // "Use query" from the metric browser commits the built selector and runs it
+  // (report §14.1 sketch; the DoD path browser → PromQL → panel).
+  const applyMetric = (expr: string) => {
+    if (!expr) {
+      return;
+    }
+    onChange({ ...query, promql: expr });
+    onRunQuery();
+  };
+
   return (
     <Stack direction="column" gap={1}>
       <TabsBar>
@@ -61,10 +89,51 @@ export function QueryEditor(props: Props) {
 
       <TabContent>
         {mode === 'prometheus' ? (
-          <Alert severity="info" title="Prometheus (PromQL) editor arrives in phase F7">
-            The backend Prometheus proxy is live (F6) — Prometheus-mode queries are routed to the configured server. The
-            PromQL editor and metric browser are planned for phase F7. The mode selection is saved with this query.
-          </Alert>
+          <>
+            <MetricBrowser datasource={props.datasource} onSelect={applyMetric} />
+
+            {/* The PromQL editor is the same monaco SQLEditor with a PromQL
+                monarch language (src/language/promql.ts); the testid wrapper is
+                what the e2e specs locate (monaco's textarea has no label). */}
+            <div data-testid="query-editor-promql">
+              <SQLEditor
+                query={query.promql || ''}
+                language={promQLSQLLanguage}
+                onChange={onPromQLChange}
+                height={220}
+              />
+            </div>
+
+            <EditorRow>
+              <EditorField label="Instant" htmlFor="query-editor-instant">
+                <Switch id="query-editor-instant" value={!!query.instant} onChange={onInstantChange} />
+              </EditorField>
+              <EditorField label="Legend format" htmlFor="query-editor-legend">
+                <Input
+                  id="query-editor-legend"
+                  value={query.legendFormat || ''}
+                  onChange={onLegendFormatChange}
+                  placeholder="{{ __name__ }}"
+                  width={30}
+                />
+              </EditorField>
+              <EditorField label="Step" htmlFor="query-editor-step">
+                <Input
+                  id="query-editor-step"
+                  value={query.step || ''}
+                  onChange={onStepChange}
+                  placeholder="auto"
+                  width={16}
+                />
+              </EditorField>
+            </EditorRow>
+
+            <div>
+              <Button size="sm" icon="play" variant="secondary" onClick={onRunQuery}>
+                Run query
+              </Button>
+            </div>
+          </>
         ) : (
           <>
             <EditorRow>

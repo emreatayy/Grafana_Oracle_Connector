@@ -1,0 +1,31 @@
+apiVersion: 1
+
+# F7: second matrix datasource with the Prometheus proxy enabled, used by the
+# metric-browser e2e (tests/queryEditor.spec.ts) and the F7 Prometheus-mode
+# alert scenario (verification/alert_check.py). Reaches the matrix Prometheus
+# over the compose network. Requires:
+#   docker compose --profile prom --profile oracle21 up -d prometheus
+# The Oracle connection settings are required for the datasource to load — the
+# plugin is "Oracle with an optional Prometheus proxy" and builds the DSN at
+# instance construction — even though this instance is only ever queried in
+# Prometheus mode.
+datasources:
+  - name: 'prometheus-datasource'
+    type: 'emreatayy-oracle-datasource'
+    access: proxy
+    isDefault: false
+    orgId: 1
+    version: 1
+    editable: true
+    jsonData:
+      o_hostname: 'oracle21'
+      o_port: 1521
+      o_service: 'XEPDB1'
+      o_user: 'SYSTEM'
+      sessionTimeZone: 'UTC'
+      defaultMode: 'prometheus'
+      promEnabled: true
+      promUrl: 'http://prometheus:9090'
+      promAuthType: 'none'
+    secureJsonData:
+      o_password: 'verif_password'

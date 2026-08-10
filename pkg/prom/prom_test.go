@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -268,6 +269,56 @@ func TestQuery_HTTPError(t *testing.T) {
 	_, err = c.QueryInstant(context.Background(), "up{", time.Time{})
 	if err == nil || !strings.Contains(err.Error(), "HTTP 400") {
 		t.Errorf("err = %v, want HTTP 400", err)
+	}
+}
+
+// TestRawJSON_LabelValues exercises the metric-browser/variable passthrough
+// (F7/F8, report §9.2): the raw envelope is returned unchanged and the
+// Authorization header built from Options reaches the server.
+func TestRawJSON_LabelValues(t *testing.T) {
+	var gotPath, gotAuth string
+	srv := newFixtureServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"status":"success","data":["up","down"]}`))
+	})
+	c, err := NewClient(srv.URL, Options{AuthType: "token", Token: "s3cret"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	body, err := c.RawJSON(context.Background(), "/api/v1/label/__name__/values", nil)
+	if err != nil {
+		t.Fatalf("RawJSON: %v", err)
+	}
+	if gotPath != "/api/v1/label/__name__/values" {
+		t.Errorf("path = %q", gotPath)
+	}
+	if gotAuth != "Bearer s3cret" {
+		t.Errorf("auth = %q, want Bearer s3cret", gotAuth)
+	}
+	if !strings.Contains(string(body), `"up"`) {
+		t.Errorf("body = %s, want the raw envelope", body)
+	}
+}
+
+// TestRawJSON_SeriesParams forwards match[] selectors to /api/v1/series.
+func TestRawJSON_SeriesParams(t *testing.T) {
+	var gotRawQuery string
+	srv := newFixtureServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotRawQuery = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"status":"success","data":[]}`))
+	})
+	c, err := NewClient(srv.URL, Options{})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	params := url.Values{"match[]": {"up", `up{job="x"}`}}
+	_, err = c.RawJSON(context.Background(), "/api/v1/series", params)
+	if err != nil {
+		t.Fatalf("RawJSON: %v", err)
+	}
+	if !strings.Contains(gotRawQuery, "match%5B%5D=up") || !strings.Contains(gotRawQuery, "match%5B%5D=") {
+		t.Errorf("raw query = %q, want the match[] params forwarded", gotRawQuery)
 	}
 }
 

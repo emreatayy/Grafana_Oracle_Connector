@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""F6 — Prometheus proxy end-to-end check (report §9).
+"""F6/F7 — Prometheus proxy end-to-end check (report §9).
 
 Creates two throwaway datasources through the Grafana API and POSTs
 `/api/ds/query` in both Prometheus modes:
@@ -12,6 +12,14 @@ Creates two throwaway datasources through the Grafana API and POSTs
     proxy failure          -> per-query status 500 with a readable error whose
                              text must NOT contain the token — the F6 DoD
                              "credentials never logged".
+
+F7 additionally exercises the metric-browser resource endpoints through
+Grafana's resource proxy (the same calls the frontend MetricBrowser makes):
+  GET /api/datasources/uid/<uid>/resources/prometheus/label/__name__/values
+  GET /api/datasources/uid/<uid>/resources/prometheus/labels
+  GET /api/datasources/uid/<uid>/resources/prometheus/series?match[]=up
+  and feeds a metric name from the browser into an instant query — the F7 DoD
+  path "metric browser -> PromQL -> panel".
 
 Two datasources are used deliberately: Grafana's server-side plugin-settings
 cache can keep serving the OLD settings for a while after a datasource is
@@ -188,6 +196,48 @@ def main():
         check(ok, f"proxy failure surfaces as a readable error (query status {res.get('status')})")
         check(SECRET not in text,
               "configured token is not echoed in the error response (credentials never logged)")
+
+        # --- F7: metric-browser resources (the frontend MetricBrowser's data) ---
+        def resource(uid, path):
+            return api(base, auth, "GET", f"/api/datasources/uid/{uid}/resources/{path}")
+
+        def data_of(payload):
+            return (payload or {}).get("data") if isinstance(payload, dict) else None
+
+        status, payload = resource(DS_UID_A, "prometheus/label/__name__/values")
+        names = data_of(payload)
+        ok = (status == 200 and isinstance(payload, dict) and payload.get("status") == "success"
+              and isinstance(names, list) and len(names) > 0)
+        check(ok, f"metric browser: label/__name__/values -> {len(names) if isinstance(names, list) else '?'} metrics (HTTP {status})")
+        check(isinstance(names, list) and "up" in names, "metric list contains 'up'")
+
+        status, payload = resource(DS_UID_A, "prometheus/labels")
+        labels = data_of(payload)
+        ok = status == 200 and isinstance(labels, list) and "job" in labels
+        check(ok, f"metric browser: labels endpoint (HTTP {status})")
+
+        status, payload = resource(DS_UID_A, "prometheus/series?match%5B%5D=up")
+        series = data_of(payload)
+        ok = status == 200 and isinstance(series, list) and len(series) > 0
+        check(ok, f"metric browser: series?match[]=up -> {len(series) if isinstance(series, list) else '?'} series (HTTP {status})")
+
+        # resource -> query: a metric name picked from the browser drives an
+        # instant query (F7 DoD "metric browser -> PromQL -> panel").
+        pick = "up"
+        if isinstance(names, list):
+            pick = next((n for n in names if n), "up")
+        status, payload = api(base, auth, "POST", "/api/ds/query",
+                              {"from": "now-5m", "to": "now",
+                               "queries": [dsq("D", DS_UID_A, {"mode": "prometheus",
+                                                               "promql": pick, "instant": True})]})
+        res = (payload.get("results", {}).get("D", {}) or {}) if isinstance(payload, dict) else {}
+        frames = res.get("frames") or []
+        ok = status == 200 and len(frames) == 1 and field_names(frames[0])[:1] == ["time"]
+        check(ok, f"metric browser -> instant query on '{pick}' returns a frame")
+
+        # unknown resource path -> clean 404, never a proxy pass-through
+        status, _ = resource(DS_UID_A, "prometheus/nope")
+        check(status == 404, f"unknown resource path -> HTTP {status} (want 404)")
     finally:
         delete_ds(DS_UID_A)
         delete_ds(DS_UID_B)

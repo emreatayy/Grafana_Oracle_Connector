@@ -3,7 +3,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Grafana](https://img.shields.io/badge/Grafana-%E2%89%A512.3-F46800.svg)](https://grafana.com)
 [![Oracle](https://img.shields.io/badge/Oracle-%E2%89%A512c-red.svg)](https://www.oracle.com/database/)
-[![Status](https://img.shields.io/badge/status-F5%20done-brightgreen.svg)](#status)
+[![Status](https://img.shields.io/badge/status-F7%20done-brightgreen.svg)](#status)
 [![CI](https://github.com/emreatayy/Grafana_Oracle_Connector/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
 A **Grafana data source plugin for Oracle Database** with an optional
@@ -45,8 +45,8 @@ procedures) — all driven from the query editor.
 | Stage | State |
 |---|---|
 | Design | ✅ Complete — `docs/project-report.md` (v2) |
-| Empirical verification | ✅ **10 of 10** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1, Prometheus 3.5.0) — see `verification/` |
-| Implementation | ✅ **F6 done** (connection core + typed mapping + macro & variable engine + SQL query editor + basic alerting + Prometheus proxy backend) — next: F7 (PromQL editor + metric browser) |
+| Empirical verification | ✅ **11 of 11** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1, Prometheus 3.5.0) — see `verification/` |
+| Implementation | ✅ **F7 done** (connection core + typed mapping + macro & variable engine + SQL query editor + basic alerting + Prometheus proxy backend + PromQL editor & metric browser) — next: F8 (variables) |
 
 The report's riskiest assumptions were validated empirically before any code
 was written, which produced two design corrections early:
@@ -256,6 +256,21 @@ Pinned dependencies (pinned at F0, 2026-08-07):
 > (`verification/prom_check.py`, 5/5): correct frames in both modes, raw PromQL
 > on `executedQueryString`, and proxied failures never echo the configured token
 > (credentials never logged).
+>
+> **F7 (2026-08-10):** Prometheus query editor + metric browser — the
+> Prometheus tab is now a real editor: a **metric browser** (prefix-filtered
+> metric dropdown from `label/__name__/values` + per-label value filters
+> derived from `series`; "Use query" commits the built PromQL selector) and a
+> monaco **PromQL editor** (`src/language/promql.ts`: `#` comments, durations,
+> label matchers, aggregation keywords/functions), plus **Instant** / **Legend
+> format** (`{{ __name__ }}`) / **Step** query options. The browser talks to the
+> plugin's new `CallResource` handler (`prometheus/labels`,
+> `prometheus/label/<name>/values`, `prometheus/series` — whitelisted, gated by
+> `promEnabled`, label names validated to `[a-zA-Z0-9_:]`), which proxies the
+> same credentials the queries use. Verified on Grafana 12.4 + 13.1: resource
+> endpoints against a real Prometheus 3.5.0 and a **Prometheus-mode alert rule**
+> (`prom_check.py` + `alert_check.py` 8 scenarios), plus a metric-browser e2e
+> against the provisioned `prometheus-datasource`.
 
 ---
 
@@ -348,20 +363,21 @@ Verify the built plugin against a running matrix Grafana (plugin load, health
 
 ## Roadmap
 
-16 implementation phases in 4 waves (~52–54 person-days). **F6 is done**
+16 implementation phases in 4 waves (~52–54 person-days). **F7 is done**
 (scaffold + Oracle connection core + typed type mapping & frame generation +
 backend macro & variable engine + SQL query editor + basic alerting + the
-Prometheus proxy backend: pooled connection, session timezone pinning,
-ctx-cancelled queries, read-only guard, ORA error parsing, typed
-NUMBER/DATE/CLOB/NULL fields, wide/long time series, `largeNumberMode`,
-`$__timeFilter`/`$__unixEpochGroup`/`${var:csv}` interpolation with
-fail-closed guards, mode-tab query editor with an Oracle monarch language,
-float64 time-series value columns + scalar-`COUNT(*)` "rows > 0" alert rules,
-and a `pkg/prom` proxy client with query_range/query frames, step derivation,
-legend templates, basic/bearer auth and a ConfigEditor Prometheus section —
+Prometheus proxy backend + the PromQL editor & metric browser: pooled
+connection, session timezone pinning, ctx-cancelled queries, read-only guard,
+ORA error parsing, typed NUMBER/DATE/CLOB/NULL fields, wide/long time series,
+`largeNumberMode`, `$__timeFilter`/`$__unixEpochGroup`/`${var:csv}`
+interpolation with fail-closed guards, mode-tab query editor with Oracle +
+PromQL monarch languages, float64 time-series value columns + scalar-`COUNT(*)`
+"rows > 0" alert rules, a `pkg/prom` proxy client with query_range/query frames,
+step derivation, legend templates, basic/bearer auth, a ConfigEditor Prometheus
+section, and the metric browser backed by a proxied `CallResource` handler —
 all verified on Grafana 12.4 + 13.1, the alert rules and the proxy against a
-real Prometheus 3.5.0). The critical path going forward is **F7** (PromQL
-editor + metric browser).
+real Prometheus 3.5.0). The critical path going forward is **F8** (variables:
+SQL `$__query`/`label_values` + multi-value `IN`).
 
 | Wave | Phases | Scope | Effort |
 |---|---|---|---|

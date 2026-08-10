@@ -127,21 +127,12 @@ func (d *Datasource) promQuery(ctx context.Context, query backend.DataQuery, qm 
 			"prometheus mode requires a PromQL expression")
 	}
 
-	user, password, token := d.settings.PromCreds()
-	client, err := prom.NewClient(d.settings.PromURL, prom.Options{
-		AuthType:     d.settings.PromAuthType,
-		User:         user,
-		Password:     password,
-		Token:        token,
-		TLSInsecure:  d.settings.PromTlsSkipVerify,
-		Timeout:      time.Duration(d.settings.QueryTimeoutSec) * time.Second,
-		Limit:        d.settings.MaxSeries,
-		LegendFormat: qm.LegendFormat,
-	})
+	client, err := d.promClient(d.settings.MaxSeries)
 	if err != nil {
 		// URL/config problems are readable and carry no credentials (§9.1).
 		return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
 	}
+	client.SetLegendFormat(qm.LegendFormat)
 
 	// Bound every query; the request context also propagates panel/alert
 	// cancellation (report §9.5).

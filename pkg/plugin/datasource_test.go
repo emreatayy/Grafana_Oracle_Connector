@@ -419,3 +419,149 @@ func TestDispose_GuardStopsQueries(t *testing.T) {
 		t.Fatalf("ensureReady after Dispose = %v, want disposed error", err)
 	}
 }
+
+// --- F7: CallResource (metric browser + variables) ---------------------------
+
+// callResource sends one request through ds.CallResource and returns the
+// response the sender received.
+func callResource(ds *Datasource, req *backend.CallResourceRequest) *backend.CallResourceResponse {
+	var resp *backend.CallResourceResponse
+	sender := backend.CallResourceResponseSenderFunc(func(r *backend.CallResourceResponse) error {
+		resp = r
+		return nil
+	})
+	if err := ds.CallResource(context.Background(), req, sender); err != nil {
+		return &backend.CallResourceResponse{Status: -1, Body: []byte(err.Error())}
+	}
+	return resp
+}
+
+// TestCallResource_PrometheusDisabled: the browser is gated by promEnabled the
+// same way as queries — a disabled proxy gets a clean 400, never touching the
+// (unreachable) database.
+func TestCallResource_PrometheusDisabled(t *testing.T) {
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+
+	resp := callResource(ds, &backend.CallResourceRequest{
+		Path: "prometheus/label/__name__/values",
+	})
+	if resp.Status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.Status)
+	}
+	if !strings.Contains(string(resp.Body), "disabled") {
+		t.Errorf("body = %s, want disabled message", resp.Body)
+	}
+}
+
+// TestCallResource_MetricBrowser proxies label/__name__/values and labels with
+// the datasource's auth header, and returns the raw Prometheus envelope.
+func TestCallResource_MetricBrowser(t *testing.T) {
+	var gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"status":"success","data":["up","down"]}`))
+	}))
+	defer srv.Close()
+
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+	ds.settings.PromEnabled = true
+	ds.settings.PromURL = srv.URL
+	ds.settings.PromAuthType = "token"
+	ds.settings.Secrets.PromToken = "t0ken"
+
+	resp := callResource(ds, &backend.CallResourceRequest{
+		Path: "prometheus/label/__name__/values",
+	})
+	if resp.Status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", resp.Status, resp.Body)
+	}
+	if gotPath != "/api/v1/label/__name__/values" {
+		t.Errorf("proxied path = %q, want label/__name__/values", gotPath)
+	}
+	if gotAuth != "Bearer t0ken" {
+		t.Errorf("auth = %q, want Bearer t0ken", gotAuth)
+	}
+	if !strings.Contains(string(resp.Body), `"up"`) {
+		t.Errorf("body = %s, want the raw prometheus envelope", resp.Body)
+	}
+}
+
+// TestCallResource_Series forwards only the match[] selector to /api/v1/series.
+func TestCallResource_Series(t *testing.T) {
+	var gotPath, gotMatch string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMatch = r.URL.Query().Get("match[]")
+		_, _ = w.Write([]byte(`{"status":"success","data":[]}`))
+	}))
+	defer srv.Close()
+
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+	ds.settings.PromEnabled = true
+	ds.settings.PromURL = srv.URL
+
+	resp := callResource(ds, &backend.CallResourceRequest{
+		Path: "prometheus/series",
+		URL:  "http://irrelevant/prometheus/series?match[]=up%7Bjob%3D%22prometheus%22%7D",
+	})
+	if resp.Status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", resp.Status, resp.Body)
+	}
+	if gotPath != "/api/v1/series" {
+		t.Errorf("proxied path = %q", gotPath)
+	}
+	if gotMatch != `up{job="prometheus"}` {
+		t.Errorf("match[] = %q, want the decoded selector", gotMatch)
+	}
+}
+
+// TestCallResource_RejectsBadPaths: path traversal / control characters in a
+// label name and unknown resources are rejected before reaching Prometheus.
+func TestCallResource_RejectsBadPaths(t *testing.T) {
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+	ds.settings.PromEnabled = true
+	ds.settings.PromURL = "http://prom.example:9090" // never reached
+
+	cases := []struct {
+		path string
+		want int
+	}{
+		{"prometheus/label/..%2Fetc/values", http.StatusBadRequest},
+		{"prometheus/label/%2Fetc%2Fpasswd/values", http.StatusBadRequest},
+		{"prometheus/label//values", http.StatusBadRequest},
+		{"prometheus/unknown", http.StatusNotFound},
+		{"other/label/__name__/values", http.StatusNotFound},
+	}
+	for _, c := range cases {
+		resp := callResource(ds, &backend.CallResourceRequest{Path: c.path})
+		if resp.Status != c.want {
+			t.Errorf("path %q: status = %d, want %d", c.path, resp.Status, c.want)
+		}
+	}
+}
+
+// TestCallResource_ProxyError maps a Prometheus failure to a readable 502 whose
+// text never echoes credentials.
+func TestCallResource_ProxyError(t *testing.T) {
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+	ds.settings.PromEnabled = true
+	ds.settings.PromURL = "http://no-such-prom.invalid:9090"
+	ds.settings.PromAuthType = "token"
+	ds.settings.Secrets.PromToken = "s3cret-token-xyz"
+
+	resp := callResource(ds, &backend.CallResourceRequest{
+		Path: "prometheus/label/__name__/values",
+	})
+	if resp.Status != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", resp.Status)
+	}
+	if strings.Contains(string(resp.Body), "s3cret-token-xyz") {
+		t.Errorf("body leaks the token: %s", resp.Body)
+	}
+}

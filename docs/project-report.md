@@ -483,8 +483,9 @@ ALTER SESSION SET NLS_COMP = 'BINARY'
 |---|---|
 | `GET /api/v1/query_range` | `mode=prom` time series (matrix) |
 | `GET /api/v1/query` | instant value (vector) → stat/table |
-| `GET /api/v1/label/__name__/values` | metric browser |
+| `GET /api/v1/label/__name__/values` | metric browser (metric list) |
 | `GET /api/v1/label/<name>/values` | Prometheus query variable (`label_values`) |
+| `GET /api/v1/series` (`match[]`) | metric browser label values (F7) |
 | `GET /api/v1/status/buildinfo` | health check |
 
 ### 9.3 Matrix → Frame
@@ -640,16 +641,32 @@ Job state is read with normal queries (`SELECT * FROM user_scheduler_jobs` / `db
 [ Oracle (SQL) ]  [ Prometheus (PromQL) ]         <- mode tab-button
 ----------------------------------------------------------------
 SQL mode:
-  SQL editor (@grafana/experimental SQLEditor, syntax + autocomplete)
-  Format as: [Auto | Time series | Table]   Time column: [auto | dropdown]
-  Preview: interpolated SQL (read-only, display only)
-Prometheus mode:
+  SQL editor (plugin-ui SQLEditor + Oracle monarch language, syntax)
+  Format as: [Auto | Time series | Table]   Time column: [auto | custom]
+  Preview: interpolated SQL (read-only, display only — deferred, see below)
+Prometheus mode (F7):
   Metric browser: [oracledb_tablespace_used_percent | v] (prefix filter)
-  PromQL editor (+ function help)
-  Legend format: [{{ __name__ }}]
+    -> label filter row(s) from series?match[]= -> "Use query" -> editor + run
+  PromQL editor (plugin-ui SQLEditor + custom promql monarch language)
+  Instant: [ ] (query vs query_range)   Legend format: [{{ __name__ }}]
+  Step: [auto | duration]
 ```
 
 - The mode selection is stored **per query**; the DS default mode is in config.
+- **PromQL editor (F7):** the `@grafana/plugin-ui` `SQLEditor` used for SQL mode is
+  reused with a custom **PromQL monarch language** (`src/language/promql.ts`):
+  functions, operators, duration (`5m`) / number / string (backtick, single, double)
+  / `#` comment tokens, plus `$var` template variables and `$__` macros highlighted.
+  `ignoreCase: false` (PromQL is lowercase), `tokenPostfix: '.promql'`.
+- **Metric browser (F7):** `MetricBrowser.tsx` loads metric names via
+  `label/__name__/values`, then `series?match[]=<metric>` for one selected metric and
+  renders a per-label filter row; the built `{k="v"}` predicate (value-escaped) is
+  applied client-side and "Use query" writes the PromQL into the editor and runs it
+  (§18 F7 DoD). All three resources (`labels`, `label/<name>/values`, `series`) are
+  proxied through the plugin **`CallResource`** handler — the Prometheus credentials
+  live in `secureJsonData` server-side and CORS blocks the browser from calling
+  Prometheus directly. Unknown paths → 404, disabled proxy → 400, proxy errors → 502
+  (credential-free). Autocomplete (function help) is not implemented in F7.
 - **Editor implementation (F4):** the `@grafana/experimental` SQLEditor named in the
   sketch is realized via **`@grafana/plugin-ui`**, the package that succeeded it for
   Grafana 13 — `@grafana/experimental@2.1.6` peerDependencies cap at
@@ -807,6 +824,35 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 **F7 — Prometheus query editor + metric browser** · 3 pg
 - PromQL editor; metric browser (`label/__name__/values`); legend format.
 - **DoD:** Selecting from the metric browser → PromQL → panel + alert.
+- **Status (2026-08-10):** ✅ **done.** The F4 Prometheus placeholder is now a
+  real editor: monaco **PromQL** (custom monarch language in
+  `src/language/promql.ts`: functions, operators, duration/string/number tokens,
+  `$var` template variables and `$__` macros; line `#` comments), **Instant**
+  toggle, **Legend format** (`{{ __name__ }}` placeholder → `SetLegendFormat`,
+  §10.4 step derivation), **Step** field. A **metric browser**
+  (`src/components/MetricBrowser.tsx`) loads metric names via
+  `label/__name__/values` (prefix-filtered react-select), on selection fetches
+  label values via `series?match[]=<metric>` (one request), and renders a
+  per-label filter row whose `{k="v"}` predicate (value-escaped) is applied
+  client-side to build the PromQL; "Use query" lands it in the editor and runs.
+  All three resources are proxied through the plugin **`CallResource`** handler
+  (`prometheus/labels`, `prometheus/label/<name>/values` with `[a-zA-Z0-9_:]`
+  label-name validation, `prometheus/series` forwarding only `match[]` params) —
+  required because the Prometheus credentials live in `secureJsonData`
+  (server-side) and CORS blocks the browser from calling Prometheus directly.
+  Unknown resource paths → clean **404**, disabled proxy → **400**, proxy errors
+  → **502** with a credential-free message. The F7 DoD is verified end-to-end on
+  **Grafana 12.4.0 + 13.1.0** against Prometheus 3.5.0
+  (`f0_prometheus`): `verification/prom_check.py` now 11/11 (matrix + instant
+  frames, credentials-never-logged, metric-browser resources,
+  resource→instant-query round trip, unknown-path 404);
+  `verification/alert_check.py` gains a **Prom-firing** scenario — a
+  Prometheus-mode alert rule `up > 0` on the provisioned prom-only datasource
+  (`provisioning/datasources/datasources-prom.yml`) evaluates through the proxy
+  and fires (8/8 scenarios on both versions); and a metric-browser e2e spec
+  (`tests/queryEditor.spec.ts`) drives the browser → PromQL → panel path. Full
+  unit suite (raw `RawJSON` fixtures + `CallResource` routing/validation/error
+  tests incl. token-never-leaks) + lint clean; plugin check still 6/6.
 
 ### Wave C — Data and UX
 
@@ -892,7 +938,7 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 
 ## 21. Assumptions to Verify and Open Decisions
 
-Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0), Grafana 12.4/13.1, and the F0-built plugin. **10 of 10 resolved.**
+Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0), Grafana 12.4/13.1, and the F0-built plugin. **11 of 11 resolved.**
 
 | # | Check | Affects |
 |---|---|---|
@@ -906,6 +952,8 @@ Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0)
 | 8 | **✅ Verified (2026-08-07):** go-ora `ExecContext` runs anonymous `BEGIN…END` reliably — `DBMS_SCHEDULER.ENABLE`/`DISABLE`, job-state read-back, procedure call all work | 12 |
 | 9 | **✅ Verified (2026-08-08, F5 end-to-end on Grafana 12.4.0 :3001 + 13.1.0 :3002, 7/7 scenarios via `verification/alert_check.py`):** (a) a time-series rule with `Reduce(last)` fires — proof that time-series value columns are now float64 (the `*int64` frame was rejected by alerting SSE); (b) **Layer 2 requires a scalar `SELECT COUNT(*)`** — a multi-row table (`SELECT 1 AS alert_flag …`) errors with duplicate labels `{}` in the threshold step; `COUNT(*)` always returns one row (0 over an empty scan) → Normal, never NoData; NoData needs a row-returning query with zero matches (`SELECT 1 … WHERE no match`); an **empty time-series** frame is NOT NoData (`Reduce(last)` = NaN → threshold false → Normal); (c) a broken query with `execErrState=Error` shows `state="inactive" + health="error"` and with `execErrState=Alerting` shows `state="firing"` — the prometheus-compat API collapses Error/NoData into "inactive", so verification must assert `(state, health)` jointly | 10.2 / 10.5 / F5 |
 | 10 | **✅ Verified (2026-08-09, F6 end-to-end on Grafana 12.4.0 :3001 + 13.1.0 :3002 against Prometheus 3.5.0 via `verification/prom_check.py`, 5/5):** (a) `mode="prometheus"` query_range → a **wide** frame (single `time` field + one `*float64` field per series, labels on fields, `__name__` stripped → series name) with the raw PromQL on `executedQueryString`; (b) instant (`query`) → a wide **single-row** frame; (c) a proxied failure (unreachable host) surfaces as per-query status 500 with `network error: prometheus unreachable: …` — and the text never contains the configured bearer token (credentials never logged). **Grafana platform quirk:** a datasource's plugin-settings can go stale after an update — once a datasource has been queried, a subsequent update-then-query (or health "Test") may keep serving the **old** settings for a while (Grafana's server-side settings cache; not plugin-side — the plugin faithfully uses whatever settings it receives). Verified on both versions: after a `PUT /api/datasources` the health endpoint still reported the old `promUrl`. Consequences: the prom check uses **two** datasources (valid + broken) rather than create→update→query, and users editing a datasource should not expect an *immediately* updated behavior on a query that runs right after — a page reload / brief wait picks it up | 9 / F6 |
+
+| 11 | **✅ Verified (2026-08-10, F7 end-to-end on Grafana 12.4.0 :3001 + 13.1.0 :3002 against Prometheus 3.5.0 via `verification/prom_check.py`, 11/11):** (a) the metric-browser resources are proxy-able: `label/__name__/values` returns the metric list (contains `up`), `labels` returns label names (contains `job`), `series?match[]=up` returns the series set; (b) a metric name picked from the browser feeds an instant query → correct frame (resource → PromQL → panel); (c) an **unknown** resource path → clean 404 (never a proxy pass-through); (d) credentials never logged holds for resource errors too. Plus the **F7 DoD "panel + alert"**: `verification/alert_check.py` (now **8/8**) runs a Prometheus-mode alert rule `up > 0` on the provisioned prom-only datasource (`provisioning/datasources/datasources-prom.yml`) — it evaluates through the proxy and fires (`state=firing, health=ok`). **Design note:** a Prometheus-only datasource still requires the Oracle connection jsonData — the plugin is "Oracle with an optional Prometheus proxy" and builds its DSN at instance construction (§5) — but it is only ever queried in Prometheus mode | 9 / F7 |
 
 **Open decisions (with recommended defaults):**
 

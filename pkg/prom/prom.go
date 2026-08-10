@@ -89,6 +89,13 @@ func NewClient(baseURL string, opts Options) (*Client, error) {
 	}, nil
 }
 
+// SetLegendFormat sets the per-query series-name template (report §9.3; ""
+// restores the default {{ __name__ }}). The client is constructed per request,
+// so mutating it is not racy.
+func (c *Client) SetLegendFormat(tpl string) {
+	c.legend = tpl
+}
+
 // AuthHeader precomputes the Authorization header for opts (report §9.1).
 func AuthHeader(opts Options) string {
 	switch opts.AuthType {
@@ -146,16 +153,36 @@ func (c *Client) QueryInstant(ctx context.Context, query string, at time.Time) (
 	return vectorToFrame(resp.Data, c.legend)
 }
 
+// RawJSON issues a read-only GET to an API v1 path and returns the raw response
+// body. Used by the metric-browser resource handler (F7) and the F8
+// label_values variables; auth/TLS/limits apply exactly as for queries.
+func (c *Client) RawJSON(ctx context.Context, path string, params url.Values) ([]byte, error) {
+	return c.rawGet(ctx, path, params)
+}
+
 // get performs a GET against the API, decodes JSON into out, and maps HTTP
 // status + Prometheus `status:"error"` payloads to readable errors (§9.5).
 func (c *Client) get(ctx context.Context, path string, params url.Values, out any) error {
+	body, err := c.rawGet(ctx, path, params)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("prometheus response parse: %w", err)
+	}
+	return nil
+}
+
+// rawGet performs the GET and returns the raw body, leaving decoding to the
+// caller. Errors are readable and never carry credentials (report §9.5).
+func (c *Client) rawGet(ctx context.Context, path string, params url.Values) ([]byte, error) {
 	u := c.base + path
 	if len(params) > 0 {
 		u += "?" + params.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return fmt.Errorf("prometheus request: %w", err)
+		return nil, fmt.Errorf("prometheus request: %w", err)
 	}
 	if auth := c.auth; auth != "" {
 		req.Header.Set("Authorization", auth)
@@ -163,21 +190,18 @@ func (c *Client) get(ctx context.Context, path string, params url.Values, out an
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("prometheus unreachable: %w", err)
+		return nil, fmt.Errorf("prometheus unreachable: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return fmt.Errorf("prometheus response read: %w", err)
+		return nil, fmt.Errorf("prometheus response read: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("prometheus returned HTTP %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+		return nil, fmt.Errorf("prometheus returned HTTP %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
 	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("prometheus response parse: %w", err)
-	}
-	return nil
+	return body, nil
 }
 
 // maxResponseBytes bounds a single Prometheus response (report §9.5). 64 MiB is

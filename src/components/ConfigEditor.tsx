@@ -247,7 +247,7 @@ export function ConfigEditor(props: Props) {
           label="Default mode"
           labelWidth={24}
           interactive
-          tooltip="Editor tab opened for new queries (report §14.1). Each query stores its own mode; this is only the default. Prometheus is a placeholder until F6."
+          tooltip="Editor tab opened for new queries (report §14.1). Each query stores its own mode; this is only the default."
         >
           <Select<QueryMode>
             id="config-editor-default-mode"

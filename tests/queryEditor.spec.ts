@@ -24,10 +24,43 @@ test('mode is stored per query: switching tabs keeps the editor mode', async ({
   const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
   await panelEditPage.datasource.set(ds.name);
   await page.getByRole('tab', { name: 'Prometheus (PromQL)' }).click();
-  // F6: the backend proxy is live; the PromQL editor UI is planned for F7.
-  await expect(page.getByText('Prometheus (PromQL) editor arrives in phase F7')).toBeVisible();
+  // F7: the PromQL editor is a monaco SQLEditor (plugin-ui) with a PromQL
+  // monarch language, located via its testid (the textarea carries no label).
+  await expect(panelEditPage.getQueryEditorRow('A').getByTestId('query-editor-promql')).toBeVisible();
+  await expect(panelEditPage.getQueryEditorRow('A').getByLabel('Legend format')).toBeVisible();
   await page.getByRole('tab', { name: 'Oracle (SQL)' }).click();
   await expect(panelEditPage.getQueryEditorRow('A').getByTestId('query-editor-sql')).toBeVisible();
+});
+
+// F7 DoD ("metric browser → PromQL → panel"): requires the matrix Prometheus
+// (docker compose --profile prom up -d prometheus) and the provisioned
+// prometheus-datasource from provisioning/datasources/datasources-prom.yml.
+test('metric browser: selecting a metric builds a PromQL query', async ({
+  panelEditPage,
+  readProvisionedDataSource,
+  page,
+}) => {
+  const ds = await readProvisionedDataSource({ fileName: 'datasources-prom.yml' });
+  await panelEditPage.datasource.set(ds.name);
+  await page.getByRole('tab', { name: 'Prometheus (PromQL)' }).click();
+  const browser = panelEditPage.getQueryEditorRow('A').getByTestId('query-editor-metric-browser');
+  await expect(browser).toBeVisible();
+  // react-select renders the dropdown; typing applies the prefix filter. The
+  // menu is PORTALED to the document root, so options must be located on the
+  // page, not inside the metric-browser subtree. The metric list also loads
+  // asynchronously through the resource proxy, so wait for the filtered "up"
+  // option before committing — Enter on an empty/loading menu selects nothing
+  // and "Use query" stays disabled.
+  await browser.getByRole('combobox').click();
+  await page.keyboard.type('up');
+  await expect(page.getByRole('option', { name: 'up', exact: true })).toBeVisible();
+  await page.getByRole('option', { name: 'up', exact: true }).click();
+  // Selecting a metric loads its series → the label filter row + Use query.
+  await expect(browser.getByRole('button', { name: 'Use query' })).toBeEnabled();
+  await browser.getByRole('button', { name: 'Use query' }).click();
+  // The built PromQL lands in the editor and the query runs against the proxy.
+  await expect(panelEditPage.getQueryEditorRow('A').getByTestId('query-editor-promql')).toContainText('up');
+  await expect(panelEditPage.refreshPanel()).toBeOK();
 });
 
 test('time column select accepts a custom column name', async ({ panelEditPage, readProvisionedDataSource, page }) => {

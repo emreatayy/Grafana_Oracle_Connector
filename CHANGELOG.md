@@ -252,6 +252,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Grafana 12.4 + 13.1 (`verification/prom_check.py`, 5/5): correct frames in
   both modes, raw PromQL on `executedQueryString`, and proxied failures never
   echo the configured token (credentials never logged).
+- **F7 — Prometheus query editor + metric browser** (report §14.1 + §18): a real
+  **PromQL editor** (monaco SQLEditor with a custom monarch language:
+  functions, operators, duration/string/number tokens, template variables and
+  `$__` macros highlighted) replaces the F4 placeholder, with **Instant**
+  toggle, **Legend format** and **Step** fields. A **metric browser**
+  (`MetricBrowser` component) lists metric names via
+  `label/__name__/values`, loads per-metric label values via `series?match[]=`,
+  and builds a filtered `{label="value"}` PromQL expression into the editor
+  ("Use query") — the F7 DoD "metric browser → PromQL → panel + alert".
+  Resources are proxied through the plugin `CallResource` handler
+  (`prometheus/labels`, `prometheus/label/<name>/values`, `prometheus/series`,
+  unknown paths → clean 404, disabled proxy → 400). Mode is stored per query;
+  legend format/step flow into the frame (`SetLegendFormat`, §10.4 step).
+  Verified end-to-end: `verification/prom_check.py` 11/11 incl. metric-browser
+  resources, `verification/alert_check.py` 8 scenarios incl. a Prometheus-mode
+  `up` alert rule on a provisioned prom-only datasource
+  (`provisioning/datasources/datasources-prom.yml`), and a metric-browser e2e
+  spec, all on Grafana 12.4 + 13.1.
 
 ### Fixed
 

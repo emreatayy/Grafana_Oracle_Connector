@@ -15,7 +15,7 @@ export type PromAuthType = 'none' | 'basic' | 'token';
 // applyTemplateVariables (alert queries never carry them — §8.3). F4 adds mode
 // (the editor tab selection, stored per query). F6 adds the Prometheus fields:
 // promql, instant (query vs query_range), legendFormat and an optional step
-// override (the editor UI for these arrives in F7).
+// override; F7 wires their editor UI.
 export interface MyQuery extends DataQuery {
   sql: string;
   mode?: QueryMode;
