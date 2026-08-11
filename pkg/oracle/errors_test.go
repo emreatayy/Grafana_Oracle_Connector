@@ -13,6 +13,31 @@ func TestFormatError_KnownORA(t *testing.T) {
 	}
 }
 
+// TestFormatError_F10Codes covers the report §13 "Test" scenarios (bad
+// password / URL / connection) and the query errors the F10 map adds.
+func TestFormatError_F10Codes(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string // a substring of the expected hint
+	}{
+		{"ORA-12154: could not resolve the connect identifier specified", "connect identifier"},
+		{"ORA-12505: listener does not currently know of SID given", "requested service"},
+		{"ORA-12560: TNS:protocol adapter error", "protocol adapter"},
+		{"ORA-01033: ORACLE initialization or shutdown in progress", "shutdown in progress"},
+		{"ORA-28009: connection to server failed", "Net configuration"},
+		{"ORA-00911: invalid character", "invalid character"},
+		{"ORA-01722: invalid number", "invalid number"},
+		{"ORA-06550: line 1, column 7:", "PL/SQL error"},
+		{"ORA-04063: package body has errors", "object has errors"},
+	}
+	for _, tc := range cases {
+		got := FormatError(errors.New(tc.raw))
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("FormatError(%q) = %q, want substring %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
 func TestFormatError_UnknownORA(t *testing.T) {
 	msg := FormatError(errors.New("foo\nORA-12345: some detail\nbar"))
 	if !strings.Contains(msg, "ORA-12345") || !strings.Contains(msg, "some detail") {

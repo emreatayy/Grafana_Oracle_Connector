@@ -128,39 +128,37 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 	return response, nil
 }
 
-// CheckHealth implements the datasource "Test" button: connect with a 5s bound
-// and report the Oracle version banner (report §5.2, §13).
+// CheckHealth implements the datasource "Test" button: connect with a 5s bound,
+// read the Oracle version banner and (F6) probe the optional Prometheus proxy.
+// The message is the structured JSON detail of report §13 (oracle.ok,
+// prometheus.ok, versions / readable errors) — see health.go. F10: every
+// failure path is formatted and redacted through safeMessage so the Test screen
+// shows a clear message for bad password / URL / connection scenarios, and a
+// proxy that is not configured never hard-fails health.
 func (d *Datasource) CheckHealth(_ context.Context, _ *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), healthTimeout)
 	defer cancel()
 
 	if err := d.ensureReady(ctx); err != nil {
-		return d.healthError(err), nil
+		return healthResult(false, "", d.safeMessage(err), nil), nil
 	}
 
 	var banner string
 	if err := d.db.QueryRowContext(ctx, "SELECT BANNER FROM V$VERSION WHERE ROWNUM = 1").Scan(&banner); err != nil {
-		return d.healthError(err), nil
+		return healthResult(false, "", d.safeMessage(err), nil), nil
 	}
 
-	msg := strings.TrimSpace(banner)
-	// F6: when the Prometheus proxy is enabled, also probe it and report the
-	// version banner. A broken proxy is surfaced as health=error (report §9.2).
+	var prom *prometheusHealth
 	if d.settings.PromEnabled {
-		promMsg, promErr := d.promHealth(ctx)
+		promVersion, promErr := d.promHealth(ctx)
 		if promErr != nil {
-			return &backend.CheckHealthResult{
-				Status:  backend.HealthStatusError,
-				Message: fmt.Sprintf("Oracle OK: %s — Prometheus: %s", msg, d.safeMessage(promErr)),
-			}, nil
+			prom = &prometheusHealth{Enabled: true, OK: false, Error: d.safeMessage(promErr)}
+		} else {
+			prom = &prometheusHealth{Enabled: true, OK: true, Version: promVersion}
 		}
-		msg = fmt.Sprintf("%s — Prometheus %s", msg, promMsg)
 	}
 
-	return &backend.CheckHealthResult{
-		Status:  backend.HealthStatusOk,
-		Message: msg,
-	}, nil
+	return healthResult(true, banner, "", prom), nil
 }
 
 // promClient builds a Prometheus client with the datasource's credentials and
@@ -297,14 +295,6 @@ func seriesParams(rawURL string) url.Values {
 		params["match[]"] = m
 	}
 	return params
-}
-
-// healthError formats a health failure without leaking credentials.
-func (d *Datasource) healthError(err error) *backend.CheckHealthResult {
-	return &backend.CheckHealthResult{
-		Status:  backend.HealthStatusError,
-		Message: d.safeMessage(err),
-	}
 }
 
 // safeMessage formats an error and strips any password/credential content.

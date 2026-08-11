@@ -643,9 +643,11 @@ Job state is read with normal queries (`SELECT * FROM user_scheduler_jobs` / `db
 | Prometheus (opt.) | `GET /api/v1/status/buildinfo` | **must NOT hard-fail health if not configured** |
 | Message | JSON detail (`oracle.ok`, `prometheus.ok`, versions) | "Test" screen in ConfigEditor |
 
----
-
-## 14. Frontend Design
+**Implemented at F10 (2026-08-11):** the health message is the structured JSON
+above (`{"oracle":{"ok":…,"version":…,"error":…},"prometheus":{"enabled":…,"ok":…}}`)
+with the readable ORA / network error text embedded; the not-configured proxy
+reports `enabled=false, ok=true` so health stays green without a Prometheus
+config. See §18 F10 and §21 row 14.
 
 ### 14.1 QueryEditor
 
@@ -958,6 +960,32 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 **F10 — Health enrichment + error resolution** · 2 pg
 - The Section 13 table; ORA-#### → readable English message map; ConfigEditor "Test" screen JSON.
 - **DoD:** Clear messages for bad password/URL/connection scenarios; health green without Prometheus config.
+- **Status (2026-08-11):** ✅ **done.**
+  - **"Test" screen JSON (13 "Message"):** the health result now returns the
+    structured JSON detail — `{"oracle":{"ok":true,"version":"…"},"prometheus":{"enabled":false,"ok":true}}`
+    — with `oracle.ok` / `prometheus.ok` booleans plus the version banner and,
+    on failure, the **readable error** in the failing subsystem. A proxy that
+    is not configured is reported `enabled=false, ok=true`, so health stays
+    **green without a Prometheus config** (DoD). The not-configured proxy can
+    never flip an Oracle failure into OK.
+  - **ORA error map (5.3):** `pkg/oracle.knownORA` is expanded from 12 to
+    **27 codes** around the §13 scenarios — bad password (`01017`), URL /
+    service (`12154`, `12505`, `12514`), connection (`01034`, `01033`,
+    `12170`, `12541`, `12545`, `12560`, `28009`, `27101`), locked/expired
+    account (`28000`, `28001`) — plus the query errors users actually hit
+    (`00900`, `00907`, `00911`, `00932`, `00942`, `00979`, `01403`, `01722`,
+    `04063`, `06550`). Network-level failures (no such host, connection
+    refused, timeout) map to a `network error:` prefix. Every message is
+    redacted for the DSN password (`oracle.Redact`) and never carries SQL.
+  - **DoD met** — bad password → `ORA-01017: invalid username or password`,
+    unreachable host → `network error: …`, both as JSON detail on the Test
+    screen; verified end-to-end on Grafana 13.1 (:3002) by the config-editor
+    e2e (asserts the alert carries a readable network error and never the
+    configured password) and on Oracle 21c by `TestIntegration_Health`,
+    `TestIntegration_Health_BadPassword` (JSON `oracle.ok=false`, no leak) and
+    a new `TestIntegration_Health_BadHost` (closed port → `network error`).
+    `TestHealthResult_Shapes` unit-tests all four §13 states; `plugin check`
+    still 6/6 on 12.4 + 13.1; full e2e suite 13/13.
 
 **F15 — Command execution (operations UI)** · 3 pg
 - "Run command" button (query editor) → `postResource('command', …)` → backend `CallResourceHandler`; allowlist (12.3); `ExecContext` for anonymous PL/SQL blocks; confirmation dialog; audit log; `commandTimeoutSec`.
@@ -1029,7 +1057,7 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 
 ## 21. Assumptions to Verify and Open Decisions
 
-Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0), Grafana 12.4/13.1, and the F0-built plugin. **13 of 13 resolved.**
+Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0), Grafana 12.4/13.1, and the F0-built plugin. **14 of 14 resolved.**
 
 | # | Check | Affects |
 |---|---|---|
@@ -1048,6 +1076,7 @@ Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0)
 | 12 | **✅ Verified (2026-08-10, F8 end-to-end on Grafana 12.4.0 :3001 + 13.1.0 :3002 via `verification/variable_check.py`, 5/5):** (a) a **SQL single-column** query (`SELECT DISTINCT object_type … WHERE object_type IN ('TABLE','VIEW')`) feeds a Grafana query variable → dropdown `['TABLE','VIEW']`; (b) **`label_values(job)`** (single-arg) → `GET /api/v1/label/job/values` → `['prometheus']`; (c) **`label_values(up, job)`** (two-arg) → `series?match[]=up` then distinct+sorted `job` → `['prometheus']` — both intercepted by the plugin before the PromQL parser, served as a one-column frame; (d) **multi-value** `WHERE object_type IN (${v:csv})` with `scopedVars v=['TABLE','VIEW']` → both rows (F3 interpolation); (e) **empty** selection (`v=[]`) → `IN (NULL)` → no rows. DoD "dropdown variable + multi-select dashboard e2e" met by `tests/variables.spec.ts` (3/3: SQL dropdown, `label_values(job)` dropdown in the variable editor, and an API-created multi-select dashboard whose panel renders only the selected values) | 8.5 / F8 |
 
 | 13 | **✅ Verified (2026-08-11, F9 end-to-end on Oracle 21c XE + Grafana 13.1.0 :3002):** (a) a **dashboard annotation** with a query target on the datasource is evaluated by Grafana's **frontend** annotation runner — the browser's `/api/ds/query` POST carries `scopedVars.__annotation` + `refId 'Anno'`, `applyTemplateVariables` sets `query.annotation=true`, and the backend returns the frame with `schema.meta.dataTopic === 'annotations'` (the marker that draws the events on the panel) in **table** shape (`time`/`title`/`text` fields mapped by name, ROWNUM ≤ 5 → 1–5 events). The server `GET /api/annotations` returns **only persisted** annotations, so query annotations must be asserted on the query response, not the annotations API. (b) the **metadata resource** (`metadata/tables`, `metadata/columns` from `ALL_TAB_COMMENTS` + `ALL_TAB_COLUMNS` ⋈ `ALL_COL_COMMENTS`) serves a bounded (≤ 200), TTL-cached table list and typed column list, and the **SQL editor completion** (plugin-ui `customProvider.tables`/`columns`) + **time-column dropdown** (DATE/TIMESTAMP columns of the parsed FROM table) are fed by it. (c) **go-ora rejects literal `?` placeholders** (ORA-00911) — metadata queries use the repo's numbered `:N` style. DoD "annotations marked on the panel; completion + time-column list work" met by `TestIntegration_Annotation` + `TestIntegration_Metadata` (6 subtests) and `tests/annotations.spec.ts`; full e2e suite 13/13 | 11 / 14.3 / F9 |
+| 14 | **✅ Verified (2026-08-11, F10 end-to-end on Oracle 21c XE + Grafana 12.4.0 :3001 + 13.1.0 :3002):** the health "Test" returns the **structured JSON detail** of §13 — `{"oracle":{"ok":…,"version":…},"prometheus":{"enabled":…,"ok":…}}` — and every failure path carries a **readable, credential-free** message: (a) **bad password** → `oracle.ok=false`, `error:"ORA-01017: invalid username or password"` (never the password — the DSN secret is redacted); (b) **unreachable host / closed port** → `error:"network error: …"` (both the API-level check and the e2e "Save & test should fail" assert the alert shows the network error and never `verif_password`); (c) **prometheus enabled** → `prometheus.enabled=true, ok=true, version:"3.5.0"` against the real Prometheus; (d) **not configured** → `prometheus.enabled=false, ok=true` so health is **green without a Prometheus config** (DoD) and a missing proxy never flips an Oracle failure into OK. Map now covers 27 ORA codes (§13 scenarios + common query errors incl. `00911`/`06550`). `TestHealthResult_Shapes` (4 §13 states) + `TestIntegration_Health*` (ok/bad-password/bad-host) green; plugin check 6/6; full e2e suite 13/13 | 13 / F10 |
 
 **Open decisions (with recommended defaults):**
 

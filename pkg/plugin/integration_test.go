@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,10 @@ func integrationDSN(t *testing.T) string {
 	return dsn
 }
 
+// badHostPortRe rewrites oracle://user:pass@host:PORT/service to port 1, a
+// closed port, so a health dial fails fast regardless of the harness host/port.
+var badHostPortRe = regexp.MustCompile(`@([^/@]+):[0-9]+/`)
+
 // newIntegrationDatasource builds a connected instance against the harness DB.
 func newIntegrationDatasource(t *testing.T) *Datasource {
 	t.Helper()
@@ -52,7 +57,8 @@ func newIntegrationDatasource(t *testing.T) *Datasource {
 	return &Datasource{settings: settings, db: db, session: oracle.SessionParams("UTC")}
 }
 
-// TestIntegration_Health connects and reads the version banner.
+// TestIntegration_Health connects, reads the version banner and verifies the
+// F10 structured JSON detail (report §13 "Message").
 func TestIntegration_Health(t *testing.T) {
 	ds := newIntegrationDatasource(t)
 	defer ds.Dispose()
@@ -64,14 +70,18 @@ func TestIntegration_Health(t *testing.T) {
 	if res.Status != backend.HealthStatusOk {
 		t.Fatalf("health status = %s (%q), want OK", res.Status, res.Message)
 	}
-	if !strings.Contains(res.Message, "Oracle") {
-		t.Errorf("banner = %q, want Oracle version banner", res.Message)
+	msg := parseHealth(t, res.Message)
+	if !msg.Oracle.OK || !strings.Contains(msg.Oracle.Version, "Oracle") {
+		t.Errorf("oracle = %+v, want ok with version banner", msg.Oracle)
 	}
-	t.Logf("connected to: %s", res.Message)
+	if msg.Prometheus.Enabled || !msg.Prometheus.OK {
+		t.Errorf("prometheus = %+v, want enabled=false ok=true (green without config)", msg.Prometheus)
+	}
+	t.Logf("connected to: %s", msg.Oracle.Version)
 }
 
-// TestIntegration_Health_BadPassword verifies the error is readable and does
-// not leak the password.
+// TestIntegration_Health_BadPassword verifies the error is readable, carried in
+// the JSON detail, and does not leak the password.
 func TestIntegration_Health_BadPassword(t *testing.T) {
 	dsn := integrationDSN(t)
 	dsn = strings.Replace(dsn, "verif_password", "wrong-password-xyz", 1)
@@ -96,11 +106,50 @@ func TestIntegration_Health_BadPassword(t *testing.T) {
 	if res.Status != backend.HealthStatusError {
 		t.Fatalf("health status = %s, want Error", res.Status)
 	}
-	if !strings.Contains(res.Message, "01017") {
-		t.Errorf("message = %q, want mapped ORA-01017", res.Message)
+	msg := parseHealth(t, res.Message)
+	if msg.Oracle.OK || !strings.Contains(msg.Oracle.Error, "01017") {
+		t.Errorf("oracle = %+v, want ok=false with mapped ORA-01017", msg.Oracle)
 	}
 	if strings.Contains(res.Message, "wrong-password-xyz") {
 		t.Errorf("message leaks the password: %q", res.Message)
+	}
+}
+
+// TestIntegration_Health_BadHost covers the "URL/connection" scenario of the
+// F10 DoD: an unreachable port must surface as a readable network error inside
+// the JSON detail (never a raw stack or a leak of the DSN password).
+func TestIntegration_Health_BadHost(t *testing.T) {
+	dsn := integrationDSN(t)
+	// Point the DSN at a closed local port so the dial fails fast, whatever the
+	// harness host/port was. Connection refused needs no valid credentials.
+	dsn = badHostPortRe.ReplaceAllString(dsn, "@$1:1/")
+	settings := &models.PluginSettings{
+		OracleSettings: models.OracleSettings{
+			ConnStr:            dsn,
+			MaxOpenConns:       2,
+			MaxIdleConns:       1,
+			ConnMaxLifetimeSec: 300,
+			QueryTimeoutSec:    5,
+			SessionTimeZone:    "UTC",
+		},
+	}
+	db := sql.OpenDB(go_ora.NewConnector(dsn))
+	ds := &Datasource{settings: settings, db: db, session: oracle.SessionParams("UTC")}
+	defer ds.Dispose()
+
+	res, err := ds.CheckHealth(context.Background(), &backend.CheckHealthRequest{})
+	if err != nil {
+		t.Fatalf("CheckHealth: %v", err)
+	}
+	if res.Status != backend.HealthStatusError {
+		t.Fatalf("health status = %s (%q), want Error", res.Status, res.Message)
+	}
+	msg := parseHealth(t, res.Message)
+	if msg.Oracle.OK || !strings.Contains(msg.Oracle.Error, "network error") {
+		t.Errorf("oracle = %+v, want ok=false with a network error", msg.Oracle)
+	}
+	if strings.Contains(res.Message, "verif_password") {
+		t.Errorf("message leaks the DSN password: %q", res.Message)
 	}
 }
 

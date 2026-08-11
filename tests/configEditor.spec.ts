@@ -46,11 +46,17 @@ test('"Save & test" should fail when the database is unreachable', async ({
   const ds = await readProvisionedDataSource<MyDataSourceOptions, MySecureJsonData>({ fileName: 'datasources.yml' });
   const configPage = await createDataSourceConfigPage({ type: ds.type });
   // Same full connection, but an unresolvable host => the health check must
-  // report a NETWORK failure (not a config-validation error).
+  // report a readable NETWORK failure (report §13 / F10), not a
+  // config-validation error or a raw stack.
   await page.getByLabel('Host').fill('no-such-host.invalid');
   await fillPort(page, ds.jsonData.o_port);
   await page.getByLabel('Service name').fill(ds.jsonData.o_service ?? '');
   await page.getByLabel('Username').fill(ds.jsonData.o_user ?? '');
   await page.getByLabel('Password').fill('verif_password');
   await expect(configPage.saveAndTest()).not.toBeOK();
+  // The Test alert carries the F10 JSON detail (report §13); its error text
+  // must read as a readable network error, never the configured password.
+  const alert = page.getByRole('alert').filter({ hasText: 'network error' }).first();
+  await expect(alert).toBeVisible();
+  await expect(alert).not.toContainText('verif_password');
 });

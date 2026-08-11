@@ -311,6 +311,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/annotations.spec.ts` (asserts `schema.meta.dataTopic === 'annotations'`
   on the annotation runner's `/api/ds/query` call — server `GET /api/annotations`
   only returns persisted annotations), full e2e suite 13/13.
+- **F10 — Health enrichment + error resolution** (report §13 + §18): the
+  datasource "Test" result is now a **structured JSON detail** —
+  `{"oracle":{"ok":…,"version":…},"prometheus":{"enabled":…,"ok":…}}` — carrying
+  `oracle.ok` / `prometheus.ok` booleans, the version banner, and the readable
+  error in the failing subsystem. A proxy that is not configured reports
+  `enabled=false, ok=true`, so health stays **green without a Prometheus
+  config** and never lets a missing proxy mask an Oracle failure. The ORA error
+  map grows from 12 to **27 codes** covering the bad password / URL / connection
+  scenarios (01017, 01033, 01034, 12154, 12170, 12505, 12514, 12541, 12545,
+  12560, 27101, 28000, 28001, 28009) and common query errors (00900, 00907,
+  00911, 00932, 00979, 01403, 01722, 04063, 06550); network failures map to a
+  `network error:` prefix. Every message is DSN-password-redacted and never
+  carries SQL. Verified: bad password → `ORA-01017: invalid username or
+  password`, unreachable host → `network error: …`, both as JSON on the Test
+  screen (config-editor e2e asserts the alert text); `TestHealthResult_Shapes`
+  (all four §13 states) + `TestIntegration_Health`/`_BadPassword`/`_BadHost` on
+  Oracle 21c; full e2e suite 13/13; plugin check 6/6 on 12.4 + 13.1.
 
 ### Fixed
 
