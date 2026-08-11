@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +40,9 @@ func integrationDSN(t *testing.T) string {
 var badHostPortRe = regexp.MustCompile(`@([^/@]+):[0-9]+/`)
 
 // newIntegrationDatasource builds a connected instance against the harness DB.
+// The pool parameters from settings are applied to the sql.DB exactly as the
+// production NewDatasource does (report §5.1), so integration tests exercise
+// the real pool behaviour — including the F12 pool-under-load measurement.
 func newIntegrationDatasource(t *testing.T) *Datasource {
 	t.Helper()
 	dsn := integrationDSN(t)
@@ -56,6 +60,9 @@ func newIntegrationDatasource(t *testing.T) *Datasource {
 		},
 	}
 	db := sql.OpenDB(go_ora.NewConnector(dsn))
+	db.SetMaxOpenConns(settings.MaxOpenConns)
+	db.SetMaxIdleConns(settings.MaxIdleConns)
+	db.SetConnMaxLifetime(time.Duration(settings.ConnMaxLifetimeSec) * time.Second)
 	return &Datasource{settings: settings, db: db, session: oracle.SessionParams("UTC")}
 }
 
@@ -205,6 +212,13 @@ func TestIntegration_QueryMetrics(t *testing.T) {
 	if got := histogramSampleCount(t, "it-uid", "sql"); got != 1 {
 		t.Errorf("query_duration samples = %d, want 1", got)
 	}
+	// F12: the single-row COUNT(*) must be counted by rows_scanned_total.
+	if got := testutil.ToFloat64(metrics.rowsScanned.WithLabelValues("it-uid", "sql")); got != 1 {
+		t.Errorf("rows_scanned_total{it-uid,sql} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(metrics.queriesTruncated.WithLabelValues("it-uid", "sql")); got != 0 {
+		t.Errorf("queries_truncated_total{it-uid,sql} = %v, want 0", got)
+	}
 }
 
 // TestIntegration_SessionTimeZone verifies the ALTER SESSION TIME_ZONE pin
@@ -227,9 +241,11 @@ func TestIntegration_SessionTimeZone(t *testing.T) {
 	}
 }
 
-// TestIntegration_CancelLongQuery is the F1 DoD: a heavy query must return
-// promptly when its context is cancelled (the mechanism Grafana uses when a
-// panel is closed or an alert is stopped).
+// TestIntegration_CancelLongQuery is the F1 DoD, re-measured for F12 (report
+// §18 F12): a heavy query must stop promptly when its context is cancelled
+// (the mechanism Grafana uses when a panel is closed or an alert is stopped).
+// F12 tightens the assertion — a cancelled query must not return a partial
+// success, it must fail.
 func TestIntegration_CancelLongQuery(t *testing.T) {
 	ds := newIntegrationDatasource(t)
 	defer ds.Dispose()
@@ -247,12 +263,15 @@ func TestIntegration_CancelLongQuery(t *testing.T) {
 	elapsed := time.Since(start)
 
 	// Must return well inside the 30s query timeout and not hang forever.
-	if elapsed > 10*time.Second {
+	if elapsed > 5*time.Second {
 		t.Fatalf("query did not cancel; took %v", elapsed)
 	}
-	// Either an error surfaced or the frame is present — the point is we did
-	// not block. A cancelled server-side query normally yields an error.
-	t.Logf("cancelled after %v; response error = %v", elapsed, resp.Error)
+	// The DoD: cancellation must stop the work — a cancelled query is an error
+	// (ORA-01013 operation cancelled, or the context deadline), never a frame.
+	if resp.Error == nil {
+		t.Fatalf("cancelled query returned no error (elapsed %v); cancellation did not stop the work", elapsed)
+	}
+	t.Logf("measured: heavy query cancelled after %v (%v)", elapsed, resp.Error)
 }
 
 // TestIntegration_ReadOnlyGuard verifies DML is rejected before execution.
@@ -829,4 +848,161 @@ func TestIntegration_Command(t *testing.T) {
 			t.Errorf("body = %s, want a readable ORA error", resp.Body)
 		}
 	})
+}
+
+// TestIntegration_MaxRows is the F12 DoD first half (report §18 F12): "100k+
+// rows … measured". A query that would return 120k rows is stopped at the
+// maxRows cap (default 100k), the frame carries a warning notice, and the F12
+// counters record the scanned rows and the truncation. A control query well
+// under the cap truncates nothing. The read is timed so the behaviour is
+// measured, not assumed.
+func TestIntegration_MaxRows(t *testing.T) {
+	ds := newIntegrationDatasource(t) // MaxRows=10000
+	defer ds.Dispose()
+	ctx := context.Background()
+	resetMetrics(t)
+
+	// Control: well under maxRows → no notice, no truncation counter.
+	small := ds.query(ctx, backend.DataQuery{RefID: "A",
+		JSON: json.RawMessage(`{"sql":"SELECT LEVEL AS n FROM DUAL CONNECT BY LEVEL <= 500"}`)}, "mx-uid")
+	if small.Error != nil {
+		t.Fatalf("control query error: %v", small.Error)
+	}
+	if n := small.Frames[0].Rows(); n != 500 {
+		t.Errorf("control rows = %d, want 500", n)
+	}
+	if meta := small.Frames[0].Meta; meta != nil && len(meta.Notices) > 0 {
+		t.Errorf("control meta notices = %+v, want none (under maxRows)", meta.Notices)
+	}
+	if got := testutil.ToFloat64(metrics.queriesTruncated.WithLabelValues("mx-uid", "sql")); got != 0 {
+		t.Errorf("queries_truncated_total{mx-uid,sql} = %v, want 0", got)
+	}
+	if got := testutil.ToFloat64(metrics.rowsScanned.WithLabelValues("mx-uid", "sql")); got != 500 {
+		t.Errorf("rows_scanned_total{mx-uid,sql} = %v, want 500", got)
+	}
+
+	// The DoD measurement: 120k generated rows capped at maxRows=100000.
+	ds.settings.MaxRows = 100000
+	start := time.Now()
+	big := ds.query(ctx, backend.DataQuery{RefID: "A",
+		JSON: json.RawMessage(`{"sql":"SELECT LEVEL AS n FROM DUAL CONNECT BY LEVEL <= 120000"}`)}, "mx-uid")
+	elapsed := time.Since(start)
+
+	if big.Error != nil {
+		t.Fatalf("big query error: %v", big.Error)
+	}
+	if n := big.Frames[0].Rows(); n != 100000 {
+		t.Errorf("capped rows = %d, want 100000 (maxRows)", n)
+	}
+	meta := big.Frames[0].Meta
+	if meta == nil || len(meta.Notices) == 0 {
+		t.Fatal("capped frame has no meta notices; want a maxRows truncation warning")
+	}
+	if got := meta.Notices[0].Severity; got != data.NoticeSeverityWarning {
+		t.Errorf("notice severity = %v, want warning", got)
+	}
+	if got := testutil.ToFloat64(metrics.queriesTruncated.WithLabelValues("mx-uid", "sql")); got != 1 {
+		t.Errorf("queries_truncated_total{mx-uid,sql} = %v, want 1", got)
+	}
+	// rows_scanned counts the rows actually read: 500 (control) + 100000 (capped).
+	if got := testutil.ToFloat64(metrics.rowsScanned.WithLabelValues("mx-uid", "sql")); got != 100500 {
+		t.Errorf("rows_scanned_total{mx-uid,sql} = %v, want 100500", got)
+	}
+	t.Logf("measured: read 120k generated rows, stopped at maxRows=100000 in %v", elapsed)
+}
+
+// TestIntegration_PoolUnderLoad is the F12 DoD third part (report §18 F12):
+// "pool behavior under load measured". newIntegrationDatasource configures
+// MaxOpenConns=5, MaxIdleConns=1. Running 20 concurrent queries — 4× the pool
+// size — must all succeed (the pool serializes them, go-ora never opens
+// unbounded connections), the configured cap must be reported by the pool
+// stats, a sampler must never observe more than MaxOpenConns open connections,
+// and the pool must drain back to the idle high-water mark once the load
+// finishes.
+func TestIntegration_PoolUnderLoad(t *testing.T) {
+	ds := newIntegrationDatasource(t)
+	defer ds.Dispose()
+	ctx := context.Background()
+	if err := ds.ensureReady(ctx); err != nil {
+		t.Fatalf("ensureReady: %v", err)
+	}
+
+	// The pool parameters from settings are actually wired into sql.DB.
+	if got := ds.db.Stats().MaxOpenConnections; got != 5 {
+		t.Fatalf("pool MaxOpenConnections = %d, want 5 (SetMaxOpenConns applied)", got)
+	}
+
+	// Sample the pool during the load so the peak is measured, not guessed.
+	var peakMu sync.Mutex
+	peak := 0
+	stop := make(chan struct{})
+	sampleDone := make(chan struct{})
+	go func() {
+		defer close(sampleDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if n := ds.db.Stats().OpenConnections; n > peak {
+				peakMu.Lock()
+				peak = n
+				peakMu.Unlock()
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+
+	const workers = 20
+	// Each query generates and aggregates 50k rows — enough work that the pool
+	// (5 conns) is genuinely saturated by 20 concurrent queries.
+	sqlText := `SELECT COUNT(*) AS n FROM (SELECT 1 FROM DUAL CONNECT BY LEVEL <= 50000)`
+	start := time.Now()
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			resp := ds.query(ctx, backend.DataQuery{RefID: "A", JSON: json.RawMessage(`{"sql":` + mustJSON(sqlText) + `}`)}, "pool-uid")
+			errs[i] = resp.Error
+		}(i)
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+	close(stop)
+	<-sampleDone
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("worker %d: query error: %v", i, err)
+		}
+	}
+	peakMu.Lock()
+	measuredPeak := peak
+	peakMu.Unlock()
+	if measuredPeak > 5 {
+		t.Errorf("measured peak open connections = %d, want <= 5 (MaxOpenConns cap)", measuredPeak)
+	}
+	if measuredPeak < 2 {
+		t.Logf("note: measured peak = %d — queries may not have overlapped enough to saturate the pool", measuredPeak)
+	}
+
+	// After the load the pool drains to the idle high-water mark (1 idle conn).
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		st := ds.db.Stats()
+		if st.OpenConnections == 1 && st.Idle == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	st := ds.db.Stats()
+	if st.Idle != 1 {
+		t.Errorf("idle connections after load = %d, want 1 (MaxIdleConns)", st.Idle)
+	}
+
+	t.Logf("measured: %d concurrent queries over %d-conn pool finished in %v; peak open = %d; final stats = %+v",
+		workers, 5, elapsed, measuredPeak, st)
 }

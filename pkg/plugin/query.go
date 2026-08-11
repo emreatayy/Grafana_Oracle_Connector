@@ -48,6 +48,12 @@ var readOnlyKeywords = map[string]bool{
 	"WITH":   true,
 }
 
+// initialRowCapacity bounds the pre-allocation of the row buffer in buildFrame
+// (F12, report §18 F12). A typical dashboard query returns well under 1024 rows
+// and append grows geometrically past it, so we never reserve the whole maxRows
+// budget (100k slice headers ≈ 800 KiB) for a 5-row result.
+const initialRowCapacity = 1024
+
 // labelValuesRe matches the Grafana query-variable syntax (report §8.5):
 //
 //	label_values(<label>)            -> every value of a label
@@ -160,7 +166,7 @@ func (d *Datasource) query(ctx context.Context, query backend.DataQuery, dsUID s
 	}
 	defer func() { _ = rows.Close() }()
 
-	return d.buildFrame(rows, qm)
+	return d.buildFrame(rows, qm, dsUID, mode)
 }
 
 // promQuery executes a Prometheus-mode query through the proxy (report §9).
@@ -341,8 +347,12 @@ func isSpace(c byte) bool {
 // Columns are classified before scanning (convert.Resolve), each cell is
 // scanned into an explicit typed destination (never []any — go-ora returns
 // NUMBER as string there, regression #533), and the frame is shaped by the
-// pure convert package. Rows are capped at the ADR-11 maxRows guard.
-func (d *Datasource) buildFrame(rows *sql.Rows, qm queryModel) backend.DataResponse {
+// pure convert package. Rows are capped at the ADR-11 maxRows guard (F12:
+// "stop reading at N"); when the cap is hit the frame carries a warning notice
+// and queries_truncated_total is bumped, so a silent truncation is observable
+// (report §18 F12). dsUID/mode label the F12 rows_scanned/truncated counters,
+// mirroring the F11 recorder labels.
+func (d *Datasource) buildFrame(rows *sql.Rows, qm queryModel, dsUID, mode string) backend.DataResponse {
 	resp := backend.DataResponse{}
 
 	colTypes, err := rows.ColumnTypes()
@@ -371,9 +381,14 @@ func (d *Datasource) buildFrame(rows *sql.Rows, qm queryModel) backend.DataRespo
 	}
 	_, kinds := convert.Resolve(cols, opt)
 
-	rowVals := make([][]any, 0, d.settings.MaxRows)
+	// Pre-allocate a modest row buffer: the default maxRows is 100k, but
+	// reserving 100k slice headers up front would cost ~800 KiB per query even
+	// for a 5-row result. append grows geometrically from here anyway.
+	rowVals := make([][]any, 0, min(d.settings.MaxRows, initialRowCapacity))
+	truncated := false
 	for rows.Next() {
 		if d.settings.MaxRows > 0 && len(rowVals) >= d.settings.MaxRows {
+			truncated = true
 			break
 		}
 		dest := make([]any, len(kinds))
@@ -393,9 +408,27 @@ func (d *Datasource) buildFrame(rows *sql.Rows, qm queryModel) backend.DataRespo
 		return d.queryError(err)
 	}
 
+	// F12 observability: rows actually scanned per query, and whether the
+	// maxRows cap stopped the read early (report §18 F12).
+	metrics.rowsScanned.WithLabelValues(dsUID, mode).Add(float64(len(rowVals)))
+	if truncated {
+		metrics.queriesTruncated.WithLabelValues(dsUID, mode).Inc()
+	}
+
 	frame, err := convert.BuildFrame(cols, rowVals, opt)
 	if err != nil {
 		return d.queryError(err)
+	}
+	if truncated {
+		if frame.Meta == nil {
+			frame.Meta = &data.FrameMeta{}
+		}
+		frame.Meta.Notices = append(frame.Meta.Notices, data.Notice{
+			Severity: data.NoticeSeverityWarning,
+			Text: fmt.Sprintf(
+				"Query returned more than %d rows; the result was truncated to the first %d rows (maxRows). "+
+					"Raise the datasource maxRows limit or narrow the query.", d.settings.MaxRows, d.settings.MaxRows),
+		})
 	}
 	// F9: mark annotation queries so Grafana treats the frame as annotation
 	// events (DataTopic.Annotations, report §11) instead of panel data.

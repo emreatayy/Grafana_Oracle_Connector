@@ -47,7 +47,7 @@ procedures) — all driven from the query editor.
 |---|---|
 | Design | ✅ Complete — `docs/project-report.md` (v2) |
 | Empirical verification | ✅ **11 of 11** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1, Prometheus 3.5.0) — see `verification/` |
-| Implementation | ✅ **F11 done** (connection core + typed mapping + macro & variable engine + SQL query editor + basic alerting + Prometheus proxy backend + PromQL editor & metric browser + query variables + annotations + editor autocomplete + health JSON + ORA error resolution + **command execution / operations UI** + **security audit, log hygiene & self-metrics**) — next: F12 (performance, limits, streaming, caching) |
+| Implementation | ✅ **F12 done** (connection core + typed mapping + macro & variable engine + SQL query editor + basic alerting + Prometheus proxy backend + PromQL editor & metric browser + query variables + annotations + editor autocomplete + health JSON + ORA error resolution + command execution / operations UI + security audit, log hygiene & self-metrics + **performance, limits, streaming & caching**) — next: F13 (docs, templates, packaging, e2e) |
 
 The report's riskiest assumptions were validated empirically before any code
 was written, which produced two design corrections early:
@@ -349,19 +349,35 @@ Pinned dependencies (pinned at F0, 2026-08-07):
 > password-redacted; `TestLogHygiene` pins this down. §15 audit re-confirmed
 > secureJsonData secrets, variable escaping, the read-only guard, the command
 > allowlist, and the SSRF-safe Prom URL. See the [Metrics](#metrics) section.
+>
+> **F12 (2026-08-11):** **Performance, limits, streaming & caching** — the
+> §18 F12 DoD is **measured on real Oracle**, not assumed: a 120k-row
+> generated query is **stopped at the `maxRows` cap (default 100k)** with a
+> **warning notice** on the frame (Grafana shows it on the panel) and a
+> `queries_truncated_total` counter bump; **cancellation** stops a heavy
+> `CONNECT BY` query in ~311 ms (ORA-01013, panel-close path); and a **pool
+> under load** — 20 concurrent queries over a 5-connection pool — completes in
+> ~365 ms with the measured peak never exceeding the `maxOpenConns` cap and the
+> pool draining back to the idle high-water mark. The Prometheus proxy response
+> is **capped at 64 MiB** with a readable limit error (was a confusing parse
+> failure). The metadata cache TTL (5 min), row streaming from the driver and
+> pool parameters were already in place; F12 adds two observability counters
+> (`rows_scanned_total`, `queries_truncated_total`) to the Metrics section.
 
 ---
 
 ## Metrics
 
-The plugin exposes three self-metrics to Grafana (report §18 F11), labelled by
-**datasource UID** and **query mode** (`sql` | `prometheus`):
+The plugin exposes five self-metrics to Grafana (report §18 F11 + F12), labelled
+by **datasource UID** and **query mode** (`sql` | `prometheus`):
 
 | Metric | Type | Meaning |
 |---|---|---|
 | `oracle_datasource_query_total` | counter | Queries executed |
 | `oracle_datasource_errors_total` | counter | Queries that failed |
 | `oracle_datasource_query_duration` | histogram (s) | Query duration |
+| `oracle_datasource_rows_scanned_total` | counter | Rows read into query frames (F12) |
+| `oracle_datasource_queries_truncated_total` | counter | Queries stopped early by the `maxRows` limit (F12) |
 
 They are registered on `prometheus.DefaultRegisterer`; the Grafana SDK's
 diagnostics server serves them through the `CollectMetrics` RPC and Grafana
@@ -493,8 +509,8 @@ bound, `SELECT … FROM DUAL` values rendered inline), and the F11 self-metrics
 DS uid + mode, exposed through Grafana's `/metrics`) with a §15 log-hygiene
 audit (no SQL, values or passwords in logs) — all verified on Grafana 12.4 +
 13.1, the alert rules and the proxy against a real Prometheus 3.5.0).
-The critical path going forward is **F12** (performance, limits, streaming,
-caching).
+The critical path going forward is **F13** (documentation, templates,
+packaging and a full e2e pass before release).
 
 | Wave | Phases | Scope | Effort |
 |---|---|---|---|
@@ -503,9 +519,10 @@ caching).
 | **C — Data & UX** | F8–F10, F15 | Variables, annotations + autocomplete, health/error UX, command execution UI | ~12 pg |
 | **D — Maturity & Release** | F11–F14 | Security/self-metrics, performance/limits, docs + packaging + e2e, ops/optional | ~12–14 pg |
 
-**F15 (command execution UI)** was the last Wave C phase and **F11 (security,
-log hygiene, self-metrics)** is the first Wave D phase to land — both **done**
-(see Status). Full phase-by-phase detail with acceptance criteria: report §18.
+**F15 (command execution UI)** was the last Wave C phase and **F11 + F12
+(security/self-metrics, then performance/limits)** are the first two Wave D
+phases to land — all **done** (see Status). Full phase-by-phase detail with
+acceptance criteria: report §18.
 
 ---
 

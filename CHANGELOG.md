@@ -379,6 +379,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `TestIntegration_QueryMetrics` on Oracle 21c; the series are visible on
   `GET /metrics` of the 12.4 and 13.1 matrix Grafanas after a panel query; lint
   0 issues.
+- **F12 — Performance, limits, streaming, caching** (report §18 F12): the
+  limits that were already in place — `maxRows` "stop reading at N" (default
+  100k, ADR-11), driver row streaming bounded at `maxRows`, the 5-minute
+  metadata cache TTL, the 64 MiB Prometheus response cap and the pooled
+  `sql.DB` — are now **measured and observable**. (a) a `maxRows` truncation is
+  **explicit**: the frame carries a warning `DataNotice` ("result was truncated
+  to the first N rows") and `oracle_datasource_queries_truncated_total` bumps,
+  so a silently cut result can no longer pass for a full one; (b) two new
+  counters — `oracle_datasource_rows_scanned_total` and
+  `oracle_datasource_queries_truncated_total` (same `{datasource,mode}` labels)
+  — join the F11 set, making the DoD observable in Grafana; (c) an oversized
+  Prometheus response (> 64 MiB) returns a **readable limit error** via the new
+  `readResponseBody` instead of a truncated-body JSON parse failure; (d)
+  `buildFrame` pre-allocates a 1024-row buffer rather than the full maxRows
+  budget. **Measured on Oracle 21c XE** (report §21 row 17): a 120k-row
+  `CONNECT BY` query stopped at `maxRows=100000` in ~55 ms (warning + counter);
+  cancellation returns ORA-01013 in ~311 ms of a 300 ms context; 20 concurrent
+  queries over a 5-connection pool finish in ~365 ms with the sampled peak never
+  exceeding `maxOpenConns` and the pool draining to `Idle=1`. Verified:
+  `TestIntegration_MaxRows`, `TestIntegration_PoolUnderLoad`,
+  `TestReadResponseBody`, and the strengthened `TestIntegration_CancelLongQuery`
+  (a cancelled query must fail, never return a partial frame); the integration
+  helper now applies the pool parameters like production `NewDatasource`.
 
 ### Fixed
 

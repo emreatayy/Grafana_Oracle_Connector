@@ -22,6 +22,8 @@ func resetMetrics(t *testing.T) {
 	metrics.queryTotal.Reset()
 	metrics.errorsTotal.Reset()
 	metrics.queryDuration.Reset()
+	metrics.rowsScanned.Reset()
+	metrics.queriesTruncated.Reset()
 }
 
 // gatheredFamilyNames returns the metric-family names on the process-wide
@@ -81,17 +83,25 @@ func TestMetrics_RegisteredOnDefaultGatherer(t *testing.T) {
 	ds := newTestDatasource(t)
 	defer ds.Dispose()
 
-	// One guard-rejected query still counts and labels a series for every family.
+	// One guard-rejected query still counts and labels a series for every
+	// family. The F12 counters (rows_scanned, queries_truncated) only gain a
+	// series inside buildFrame — which the guard rejection never reaches — so
+	// synthesize their {uid-1,sql} series at 0 to prove they are registered on
+	// the same gatherer.
 	ds.query(context.Background(), backend.DataQuery{
 		RefID: "A",
 		JSON:  json.RawMessage(`{"sql":"DELETE FROM important_table"}`),
 	}, "uid-1")
+	metrics.rowsScanned.WithLabelValues("uid-1", "sql").Add(0)
+	metrics.queriesTruncated.WithLabelValues("uid-1", "sql").Add(0)
 
 	names := gatheredFamilyNames(t)
 	for _, want := range []string{
 		"oracle_datasource_query_total",
 		"oracle_datasource_errors_total",
 		"oracle_datasource_query_duration",
+		"oracle_datasource_rows_scanned_total",
+		"oracle_datasource_queries_truncated_total",
 	} {
 		if !names[want] {
 			t.Errorf("metric family %s not visible on the default gatherer (Grafana scrapes this)", want)

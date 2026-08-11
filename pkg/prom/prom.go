@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -218,8 +219,11 @@ func (c *Client) rawGet(ctx context.Context, path string, params url.Values) ([]
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	body, err := readResponseBody(resp.Body, maxResponseBytes)
 	if err != nil {
+		if errors.Is(err, errResponseTooLarge) {
+			return nil, err // already readable, no wrapper
+		}
 		return nil, fmt.Errorf("prometheus response read: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -231,6 +235,25 @@ func (c *Client) rawGet(ctx context.Context, path string, params url.Values) ([]
 // maxResponseBytes bounds a single Prometheus response (report §9.5). 64 MiB is
 // generous for real series data while guarding against an unbounded download.
 const maxResponseBytes = 64 << 20
+
+// errResponseTooLarge marks a Prometheus response that exceeded maxResponseBytes.
+var errResponseTooLarge = errors.New("prometheus response exceeds the size limit")
+
+// readResponseBody reads a body up to limit bytes and fails cleanly when the
+// body is larger (F12, report §18 F12). An oversized response would otherwise
+// surface as a confusing truncated-JSON parse error downstream; this returns a
+// readable limit error instead. It reads limit+1 bytes so the overflow is
+// detectable without buffering the whole body.
+func readResponseBody(r io.Reader, limit int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("%w (%d bytes)", errResponseTooLarge, limit)
+	}
+	return body, nil
+}
 
 func (c *Client) applyLimit(params *url.Values) {
 	if c.limit > 0 {

@@ -2,6 +2,7 @@ package prom
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -107,6 +108,28 @@ func newFixtureServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// TestReadResponseBody is the F12 response-size guard (report §18 F12): a body
+// under the limit is passed through untouched, and an oversized body fails with
+// a readable limit error instead of a truncated-JSON parse failure. The helper
+// is tested with small limits so the test stays cheap (the production caller
+// passes maxResponseBytes = 64 MiB).
+func TestReadResponseBody(t *testing.T) {
+	// Under the limit: bytes returned untouched.
+	body, err := readResponseBody(strings.NewReader("hello"), 10)
+	if err != nil || string(body) != "hello" {
+		t.Fatalf("readResponseBody(10B into 10-limit) = (%q, %v), want (\"hello\", nil)", body, err)
+	}
+	// Exactly at the limit: OK.
+	if _, err := readResponseBody(strings.NewReader("hello"), 5); err != nil {
+		t.Fatalf("readResponseBody(5B into 5-limit): %v, want nil", err)
+	}
+	// Over the limit: clean, sentinel-recognisable error.
+	if _, err := readResponseBody(strings.NewReader("hello world"), 5); err == nil ||
+		!errors.Is(err, errResponseTooLarge) || !strings.Contains(err.Error(), "exceeds the size limit") {
+		t.Fatalf("readResponseBody(11B into 5-limit) = %v, want size-limit error", err)
+	}
 }
 
 func TestQueryRange_MatrixFrame(t *testing.T) {
