@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      signature_type:
+        description: 'Signing level: private or public'
+        required: false
+        default: 'private'
+        type: choice
+        options:
+          - private
+          - public
+      root_urls:
+        description: 'Comma-separated Grafana root URLs to embed in the signature'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write # create the GitHub Release and attach the archives
+
+# F13 release workflow (report §17.2 Workflow 4, docs/release-and-packaging.md
+# §5.2): build → sign (if a signing token exists) → archive → validate →
+# publish the archives as a GitHub Release. The tag version must match
+# plugin.json / package.json (`v1.0.0` ↔ `1.0.0`); mage reads it from dist/.
+jobs:
+  release:
+    name: Build, sign and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (backend + frontend → dist/)
+        uses: magefile/mage-action@a662bd8c29d8106879588cfff83b2faf6e6f59db # v4.0.0
+        with:
+          version: latest
+          args: buildAll
+
+      # Sign dist/ in place first so MANIFEST.txt lands inside the archives.
+      # Skipped when the repo does not yet hold a signing token — the release is
+      # then published unsigned (private use only: installs need the
+      # allow_loading_unsigned_plugins flag).
+      - name: Sign
+        env:
+          GRAFANA_ACCESS_POLICY_TOKEN: ${{ secrets.GRAFANA_ACCESS_POLICY_TOKEN }}
+        run: |
+          set -e
+          if [ -z "$GRAFANA_ACCESS_POLICY_TOKEN" ]; then
+            echo "::warning::No GRAFANA_ACCESS_POLICY_TOKEN secret configured — publishing an unsigned archive."
+            exit 0
+          fi
+          ARGS="--signatureType=${{ inputs.signature_type }}"
+          if [ -n "${{ inputs.root_urls }}" ]; then
+            ARGS="$ARGS --rootUrls=${{ inputs.root_urls }}"
+          fi
+          # shellcheck disable=SC2086
+          npm run sign -- $ARGS
+
+      - name: Archive (.zip + .tar.gz)
+        uses: magefile/mage-action@a662bd8c29d8106879588cfff83b2faf6e6f59db # v4.0.0
+        with:
+          version: latest
+          args: archive
+
+      - name: Validate (plugin-validator)
+        uses: magefile/mage-action@a662bd8c29d8106879588cfff83b2faf6e6f59db # v4.0.0
+        with:
+          version: latest
+          args: validate
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+          generate_release_notes: true

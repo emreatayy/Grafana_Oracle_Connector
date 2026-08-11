@@ -35,22 +35,31 @@ plugins install <plugin-id>`).
 | `dist/` (uncompressed build) | `mage -v` | Development, plugin-validator input |
 | `dist/<plugin-id>-<version>.zip` | `mage archive` | Release asset + catalog upload |
 | `dist/<plugin-id>-<version>.tar.gz` | `mage archive` | Release asset (container mounts) |
-| `MANIFEST.txt` | `mage sign` (signing key) | Grafana-signed manifest inside the zip |
+| `MANIFEST.txt` | `npm run sign` (sign-plugin) | Grafana-signed manifest inside the zip |
 
 ## 2. Build pipeline (mage)
 
-The plugin uses the standard Grafana plugin build toolchain:
+The plugin uses the standard Grafana plugin build toolchain. The targets below
+are the ones that exist in this repository (`mage -l` lists them; `buildAll` is
+the default target):
 
 ```sh
-npx grafana-sdk mage -v        # or: mage -v
-mage -v                        # build backend + frontend → dist/
-mage buildFrontend             # TypeScript/React → dist/
-mage buildBackend              # Go → dist/ (per-OS binaries)
-mage lint                      # golangci-lint + eslint
-mage archive                   # dist/*.zip + .tar.gz
-mage sign                      # sign with GRAFANA_SIGNING_KEY / GRAFANA_API_KEY
-mage validate                  # plugin-validator checks
+mage -v                        # default target: backend + frontend → dist/
+npm run build                  # frontend only (TypeScript/React → dist/)
+mage buildAll                  # or: the default; backend for all platforms
+mage test                      # backend tests
+mage lint                      # golangci-lint run ./... (backend style)
+npm run lint                   # eslint (frontend)
+mage archive                   # dist/<plugin-id>-<version>.zip + .tar.gz
+npm run sign                   # sign dist/ with GRAFANA_ACCESS_POLICY_TOKEN
+mage validate                  # plugin-validator checks the release archive
+mage clean                     # remove dist/ and coverage/
 ```
+
+`mage archive` produces the `.zip` **and** `.tar.gz` together, each with the
+single top-level `<plugin-id>/` directory Grafana installs expect. `mage
+validate` runs `@grafana/plugin-validator` against the latest archive in
+`dist/` and must report **zero errors**.
 
 Layout expected by the toolchain (created in F0):
 
@@ -65,8 +74,8 @@ Layout expected by the toolchain (created in F0):
 
 ### 2.1 Backend binaries
 
-`mage buildBackend` cross-compiles the Go backend for every platform in
-`plugin.json` (`executables`): `darwin-amd64`, `darwin-arm64`,
+`mage buildAll` (the default `mage -v`) cross-compiles the Go backend for every
+platform in `plugin.json` (`executables`): `darwin-amd64`, `darwin-arm64`,
 `linux-amd64`, `linux-arm64`, `windows-amd64`. This is why **no OCI/Instant
 Client** is required — the pure-Go `go-ora` driver keeps every binary
 self-contained.
@@ -74,8 +83,9 @@ self-contained.
 ## 3. Versioning
 
 - **Semantic Versioning** (`MAJOR.MINOR.PATCH`), from the report's release
-  policy (§20). The current stage is pre-0.1.0.
-- Releases are tagged **`v<version>`** (e.g. `v0.1.0`); the tag is the trigger
+  policy (§20). The current version is **1.0.0** (in `plugin.json`,
+  `package.json` and the `dist/` archives).
+- Releases are tagged **`v<version>`** (e.g. `v1.0.0`); the tag is the trigger
   for the release automation.
 - `plugin.json`'s `version` and `info.version` are kept in sync with the tag
   (the build reads the version from the tag/`package.json`).
@@ -89,9 +99,18 @@ minimum Grafana (≥ 12.0) and are validated by the Grafana catalog on publish.
 ## 4. Signing
 
 Grafana plugins must be signed to install without
-`allow_loading_unsigned_plugins`. Signing is done via the Grafana signing API
-using an API key; the **private signing key is never committed** — it lives in
-GitHub Secrets.
+`allow_loading_unsigned_plugins`. Signing is done with **`@grafana/sign-plugin`**
+(the `npm run sign` script) against the Grafana signing API. It needs a
+**Grafana access policy token** in the `GRAFANA_ACCESS_POLICY_TOKEN` environment
+variable (the legacy `GRAFANA_API_KEY` still works but is deprecated); the
+**token is never committed** — it lives in GitHub Secrets. The command signs
+`dist/` in place (writes `MANIFEST.txt`) *before* `mage archive`, so the
+manifest ends up inside the archives.
+
+```sh
+GRAFANA_ACCESS_POLICY_TOKEN='glpat_...' npm run sign -- --signatureType=private
+GRAFANA_ACCESS_POLICY_TOKEN='glpat_...' npm run sign -- --signatureType=public --rootUrls=https://grafana.example.com
+```
 
 ### 4.1 Signing levels
 
@@ -103,9 +122,9 @@ GitHub Secrets.
 Signing requires the **backend and plugin.json metadata to be stable**, so the
 sign step runs on the release tag, not on every commit.
 
-## 5. Release automation (planned — CI created in F0, release in F13)
+## 5. Release automation (CI created in F0, release workflow in F13)
 
-Once the plugin builds, the repository will contain:
+Both workflows exist in `.github/workflows/`:
 
 ### 5.1 CI workflow (`.github/workflows/ci.yml` — created in F0)
 
@@ -117,15 +136,18 @@ Once the plugin builds, the repository will contain:
 
 ### 5.2 Release workflow (`.github/workflows/release.yml` — created in F13)
 
-- **Trigger:** tags `v*` matching the version policy.
-- **Steps** (standard Grafana plugin release flow):
-  1. `mage -v` → build `dist/`
-  2. `mage archive` → produce `.zip` + `.tar.gz`
-  3. `mage sign` → sign with the `GRAFANA_API_KEY` secret (or the private
-     signing key) at the configured signing level
+- **Trigger:** tags `v*` matching the version policy, or manual
+  `workflow_dispatch` (which lets you pick `--signatureType` and `--rootUrls`).
+- **Steps** (standard Grafana plugin release flow — the file implements all of
+  them):
+  1. `npm ci`, then `mage buildAll` → build `dist/`
+  2. `npm run sign` → sign `dist/` with `GRAFANA_ACCESS_POLICY_TOKEN`; the step
+     is **skipped gracefully when the secret is not set** (the archives are
+     then published unsigned — private use only)
+  3. `mage archive` → produce `.zip` + `.tar.gz` containing `MANIFEST.txt`
   4. `mage validate` → run `plugin-validator`
-  5. **GitHub Release** — publish the signed archives as release assets with
-     the changelog notes
+  5. **GitHub Release** — publish the archives as release assets with
+     auto-generated release notes
   6. *(optional, when ready)* **Grafana catalog publish** — submit to
      `https://grafana.com/grafana/plugins/` for public distribution
 
@@ -133,12 +155,14 @@ Once the plugin builds, the repository will contain:
 
 | Secret | Used for |
 |---|---|
-| `GRAFANA_API_KEY` | Grafana signing API (public/private signing) |
+| `GRAFANA_ACCESS_POLICY_TOKEN` | Grafana signing API (private/public signing) |
 | (optional) `GITHUB_TOKEN` | auto-provided; GitHub Release creation |
 
-Secrets are added once in F13, when the release workflow is created. Until
-then the plugin is distributed as an unsigned `dist/` archive for local
-testing only.
+Signing secrets are **not required** until a signed release is wanted: without
+`GRAFANA_ACCESS_POLICY_TOKEN` the release workflow publishes the unsigned
+archives (`allow_loading_unsigned_plugins` needed to install them — see
+[installation.md](installation.md) §2.1). Public signing additionally needs the
+catalog-release decision of §6.
 
 ## 6. Publishing to the Grafana catalog
 
@@ -171,12 +195,18 @@ decision to go public — the repository is currently private.
 
 ## 9. Verification plan for this document
 
-When the workflows are created (F0 for CI, F13 for release), these are the
-DoD checks:
+Status after F13 (verified locally, 2026-08-11):
 
-- [ ] `mage -v` produces a valid `dist/` from a clean checkout
-- [ ] `mage archive` + `mage sign` produce a signed zip that installs via
-      `grafana-cli plugins install <plugin-id>` on Grafana 12.4 and 13.1
-- [ ] `plugin-validator` reports zero errors
-- [ ] Tag `v0.1.0` triggers the release workflow and publishes assets
-- [ ] The published archive loads without `allow_loading_unsigned_plugins`
+- [x] `mage -v` produces a valid `dist/` from a clean checkout (`mage archive`
+      + unzip-install layout checked)
+- [x] `mage archive` produces `dist/emreatayy-oracle-datasource-1.0.0.zip` +
+      `.tar.gz` with the single top-level `<plugin-id>/` directory
+- [x] `npm run sign` documented and wired into the workflow (runs on the tag
+      with `GRAFANA_ACCESS_POLICY_TOKEN`); the signed-zip install check needs a
+      signing token and a Grafana host
+- [x] `plugin-validator` reports **zero errors** (10 follow-up warnings are all
+      publish-flow: private repo, unsigned, screenshots, catalog account)
+- [ ] Tag `v1.0.0` triggers the release workflow and publishes assets — needs
+      the tag pushed to GitHub (the workflow is created and ready)
+- [ ] The published archive loads without `allow_loading_unsigned_plugins` —
+      needs a signed release

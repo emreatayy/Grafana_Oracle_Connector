@@ -1,10 +1,10 @@
 # Grafana Oracle Connector
 
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/emreatayy/Grafana_Oracle_Connector/blob/main/LICENSE)
 [![Grafana](https://img.shields.io/badge/Grafana-%E2%89%A512.3-F46800.svg)](https://grafana.com)
 [![Oracle](https://img.shields.io/badge/Oracle-%E2%89%A512c-red.svg)](https://www.oracle.com/database/)
-[![Status](https://img.shields.io/badge/status-F11%20done-brightgreen.svg)](#status)
-[![CI](https://github.com/emreatayy/Grafana_Oracle_Connector/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
+[![Status](https://img.shields.io/badge/status-F13%20done-brightgreen.svg)](#status)
+[![CI](https://github.com/emreatayy/Grafana_Oracle_Connector/actions/workflows/ci.yml/badge.svg)](https://github.com/emreatayy/Grafana_Oracle_Connector/blob/main/.github/workflows/ci.yml)
 
 A **Grafana data source plugin for Oracle Database** with an optional
 **Prometheus proxy** mode. It is built on the Grafana plugin SDK with a pure-Go
@@ -27,6 +27,7 @@ procedures) — all driven from the query editor.
 
 - [Status](#status)
 - [Features](#features)
+- [Installation](#installation)
 - [Architecture](#architecture)
 - [Version Support](#version-support)
 - [Repository Structure](#repository-structure)
@@ -46,8 +47,8 @@ procedures) — all driven from the query editor.
 | Stage | State |
 |---|---|
 | Design | ✅ Complete — `docs/project-report.md` (v2) |
-| Empirical verification | ✅ **11 of 11** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1, Prometheus 3.5.0) — see `verification/` |
-| Implementation | ✅ **F12 done** (connection core + typed mapping + macro & variable engine + SQL query editor + basic alerting + Prometheus proxy backend + PromQL editor & metric browser + query variables + annotations + editor autocomplete + health JSON + ORA error resolution + command execution / operations UI + security audit, log hygiene & self-metrics + **performance, limits, streaming & caching**) — next: F13 (docs, templates, packaging, e2e) |
+| Empirical verification | ✅ **18 of 18** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1, Prometheus 3.5.0) — see `verification/` |
+| Implementation | ✅ **F13 done** (connection core + typed mapping + macro & variable engine + SQL query editor + basic alerting + Prometheus proxy backend + PromQL editor & metric browser + query variables + annotations + editor autocomplete + health JSON + ORA error resolution + command execution / operations UI + security audit, log hygiene & self-metrics + performance, limits, streaming & caching + **user installation guide, dashboard example templates + readonly account SQL, `mage archive`/`mage validate` packaging, sign + release workflow, full e2e**) — next: F14 (ops/optional) |
 
 The report's riskiest assumptions were validated empirically before any code
 was written, which produced two design corrections early:
@@ -93,6 +94,52 @@ returns SUCCESS, and the rules API accepts an alert rule that queries it
   Oracle Client libraries on the target system.
 - **Multi-version** — one build supports Grafana ≥ 12.3, Oracle ≥ 12c, and
   Prometheus 2.40+ / 3.x (see [Version Support](#version-support)).
+
+---
+
+## Installation
+
+Grafana **12.3+** and Oracle **12c+** are required; **no Oracle Client (OCI /
+Instant Client) is needed** — the backend is a pure-Go driver. The full
+step-by-step guide — archive install, the unsigned-plugin flag, every datasource
+field, the read-only user, the Prometheus proxy, the exporter guide and
+troubleshooting — is in
+[`docs/installation.md`](https://github.com/emreatayy/Grafana_Oracle_Connector/blob/main/docs/installation.md).
+
+### Quick install
+
+1. Download `emreatayy-oracle-datasource-<version>.zip` (or `.tar.gz`) from the
+   release assets.
+2. Unpack it so the plugin folder `emreatayy-oracle-datasource/` (with
+   `plugin.json` at its root) lands under Grafana's plugin directory
+   (`/var/lib/grafana/plugins` by default).
+3. Restart Grafana. A **signed** release archive loads as-is; an **unsigned**
+   build additionally needs:
+   ```sh
+   export GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=emreatayy-oracle-datasource
+   ```
+4. **Connections → Data sources → Oracle Datasource**: enter host / port, a
+   service name **or** SID, and the account credentials. **Save & test** — the
+   result is structured JSON (`{"oracle":{...},"prometheus":{...}}`).
+
+### Recommended read-only user
+
+Connect the datasource as a dedicated **read-only** Oracle account, never as
+`SYSTEM`/`SYS`. The plugin blocks anything but `SELECT`/`WITH` at the query
+path (ADR-7); the database account is the second layer.
+[`examples/readonly_user.sql`](https://github.com/emreatayy/Grafana_Oracle_Connector/blob/main/examples/readonly_user.sql)
+creates the account with the minimum grants (`CREATE SESSION`, `SELECT ON
+SYS.V_$VERSION` for the health banner, `SELECT` on the dashboards' tables) and
+verifies that a `DELETE` fails with `ORA-01031`.
+
+### Metrics and the exporter guide
+
+The plugin's own self-metrics are served by Grafana at
+`/metrics/plugins/emreatayy-oracle-datasource` (see [Metrics](#metrics)). To
+monitor Oracle itself, pair the **Prometheus proxy** mode with the official
+Oracle exporter (`oracle/oracle-db-appdev-monitoring`) scraped by Prometheus —
+the exporter + Prometheus + Grafana wiring is in
+[`docs/installation.md` §5](https://github.com/emreatayy/Grafana_Oracle_Connector/blob/main/docs/installation.md).
 
 ---
 
@@ -363,6 +410,24 @@ Pinned dependencies (pinned at F0, 2026-08-07):
 > failure). The metadata cache TTL (5 min), row streaming from the driver and
 > pool parameters were already in place; F12 adds two observability counters
 > (`rows_scanned_total`, `queries_truncated_total`) to the Metrics section.
+>
+> **F13 (2026-08-11):** **Documentation, templates, packaging, e2e** — the
+> release-ready package and the "every example works" DoD are done and locked
+> by tests. [Installation guide](https://github.com/emreatayy/Grafana_Oracle_Connector/blob/main/docs/installation.md) covers the version
+> matrix, archive install + the unsigned-plugin flag, every datasource field,
+> the recommended read-only user, and the official-exporter → Prometheus →
+> proxy guide; `examples/dashboard/oracle-overview.json` demonstrates all three
+> query shapes on any Oracle (synthetic-load SQL time series, `user_tables`
+> SQL table, Prometheus-proxy `up` panel) — and `TestIntegration_DashboardExamples`
+> now runs both SQL panels through the real query path and asserts the frames
+> (96-point series, ≤ 20-row table), so the examples can't rot.
+> `examples/readonly_user.sql` provisions the read-only account. Packaging:
+> `mage archive` builds `dist/emreatayy-oracle-datasource-1.0.0.zip` + `.tar.gz`
+> in the Grafana layout, `mage validate` runs `plugin-validator` at **zero
+> errors**, `npm run sign` (`GRAFANA_ACCESS_POLICY_TOKEN`) signs `dist/` before
+> archiving, and `.github/workflows/release.yml` automates build → sign → archive
+> → validate → GitHub Release on a `v*` tag. Full e2e suite + plugin-check
+> matrix 6/6 on Grafana 12.4 + 13.1 green.
 
 ---
 
@@ -473,15 +538,17 @@ Verify the built plugin against a running matrix Grafana (plugin load, health
 
 | Document | Purpose |
 |---|---|
-| [`docs/project-report.md`](docs/project-report.md) | **Master design & implementation report (v2)** — version matrix, architecture + ADRs, type mapping, macros, Prometheus mode, alerting, command execution, security, test plan, 16-phase roadmap. |
-| [`docs/release-and-packaging.md`](docs/release-and-packaging.md) | Distribution model, build/signing pipeline, versioning, and release workflow plan. |
-| [`verification/README.md`](verification/README.md) | How to build and run the empirical verification harness. |
+| [`docs/project-report.md`](https://github.com/emreatayy/Grafana_Oracle_Connector/blob/main/docs/project-report.md) | **Master design & implementation report (v2)** — version matrix, architecture + ADRs, type mapping, macros, Prometheus mode, alerting, command execution, security, test plan, 16-phase roadmap. |
+| [`docs/installation.md`](https://github.com/emreatayy/Grafana_Oracle_Connector/blob/main/docs/installation.md) | User installation & configuration guide — archive install, datasource fields, read-only user, Prometheus proxy, exporter guide, troubleshooting. |
+| [`docs/release-and-packaging.md`](https://github.com/emreatayy/Grafana_Oracle_Connector/blob/main/docs/release-and-packaging.md) | Distribution model, build/signing pipeline, versioning, and release workflow plan. |
+| [`verification/README.md`](https://github.com/emreatayy/Grafana_Oracle_Connector/blob/main/verification/README.md) | How to build and run the empirical verification harness. |
 
 ---
 
 ## Roadmap
 
-16 implementation phases in 4 waves (~52–54 person-days). **F11 is done**
+16 implementation phases in 4 waves (~52–54 person-days). **F13 is done —
+everything through Wave C and the first three Wave D phases have landed:**
 (scaffold + Oracle connection core + typed type mapping & frame generation +
 backend macro & variable engine + SQL query editor + basic alerting + the
 Prometheus proxy backend + the PromQL editor & metric browser + Grafana query
@@ -504,13 +571,22 @@ table/column completion and the time-column dropdown, a structured health
 connection + query errors, all credential-redacted), a "Run command" button
 that executes allowlisted one-shot scheduler/procedure commands through the
 backend `command` resource (confirm-gated, audit-logged, `commandTimeoutSec`
-bound, `SELECT … FROM DUAL` values rendered inline), and the F11 self-metrics
+bound, `SELECT … FROM DUAL` values rendered inline), the F11 self-metrics
 (`oracle_datasource_query_total`/`errors_total`/`query_duration`, labelled by
 DS uid + mode, exposed through Grafana's `/metrics`) with a §15 log-hygiene
-audit (no SQL, values or passwords in logs) — all verified on Grafana 12.4 +
-13.1, the alert rules and the proxy against a real Prometheus 3.5.0).
-The critical path going forward is **F13** (documentation, templates,
-packaging and a full e2e pass before release).
+audit (no SQL, values or passwords in logs), the **F12 measured guarantees**
+(100k-row `maxRows` truncation with a frame warning notice, ~311 ms
+cancellation, 20-over-5 pool under load, 64 MiB Prometheus response cap), and
+the **F13 release readiness** (user installation guide incl. read-only
+operating account + exporter guide, a three-shape dashboard template +
+`examples/readonly_user.sql`, `mage archive`/`mage validate` packaging at
+zero validator errors, `npm run sign` signing + the tag-triggered release
+workflow, and the full e2e pass) — all verified on Grafana 12.4 + 13.1, the
+alert rules and the proxy against a real Prometheus 3.5.0, and the examples
+against a real Oracle 21c XE).
+The critical path going forward is **F14 (ops/optional)** — TLS/Wallet/TNS
+options, the Alertmanager `ALERTS` view (Layer 3 alerting), and optional
+exporter orchestration; all remaining items are clearly marked optional.
 
 | Wave | Phases | Scope | Effort |
 |---|---|---|---|
@@ -519,9 +595,10 @@ packaging and a full e2e pass before release).
 | **C — Data & UX** | F8–F10, F15 | Variables, annotations + autocomplete, health/error UX, command execution UI | ~12 pg |
 | **D — Maturity & Release** | F11–F14 | Security/self-metrics, performance/limits, docs + packaging + e2e, ops/optional | ~12–14 pg |
 
-**F15 (command execution UI)** was the last Wave C phase and **F11 + F12
-(security/self-metrics, then performance/limits)** are the first two Wave D
-phases to land — all **done** (see Status). Full phase-by-phase detail with
+**F15 (command execution UI)** was the last Wave C phase and **F11 + F12 +
+F13 (security/self-metrics, performance/limits, then documentation /
+templates / packaging / e2e)** are the first three Wave D phases to land —
+all **done** (see [Status](#status)). Full phase-by-phase detail with
 acceptance criteria: report §18.
 
 ---
@@ -529,7 +606,7 @@ acceptance criteria: report §18.
 ## Release & Packaging
 
 The distribution plan — build → sign → GitHub Release → Grafana catalog — is
-documented in [`docs/release-and-packaging.md`](docs/release-and-packaging.md).
+documented in [`docs/release-and-packaging.md`](https://github.com/emreatayy/Grafana_Oracle_Connector/blob/main/docs/release-and-packaging.md).
 
 The tl;dr: a Grafana data source plugin is distributed as a **signed plugin
 archive** (`.zip` / `.tar.gz`) produced by the `mage` build, not as an npm or
@@ -541,15 +618,15 @@ and require a signing API key stored as a GitHub secret.
 
 ## Contributing
 
-Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) — it covers the design-first
+Please read [`CONTRIBUTING.md`](https://github.com/emreatayy/Grafana_Oracle_Connector/blob/main/CONTRIBUTING.md) — it covers the design-first
 workflow (report → ADR → verification → code), the English-only project
 convention, and how to run the verification harness before submitting changes.
 
 ## Security
 
-Vulnerability reporting and security expectations: [`SECURITY.md`](SECURITY.md).
+Vulnerability reporting and security expectations: [`SECURITY.md`](https://github.com/emreatayy/Grafana_Oracle_Connector/blob/main/SECURITY.md).
 
 ## License
 
-[Apache License 2.0](LICENSE) — © 2026 the project contributors.
+[Apache License 2.0](https://github.com/emreatayy/Grafana_Oracle_Connector/blob/main/LICENSE) — © 2026 the project contributors.
 Third-party licenses: `go-ora` (MIT), Grafana plugin SDK (Apache-2.0).

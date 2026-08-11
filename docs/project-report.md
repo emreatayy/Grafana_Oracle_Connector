@@ -795,7 +795,12 @@ tags are used (12.4.0 / 13.1.0).
 - **Workflow 1 (unit):** `go test` + frontend Jest — every commit.
 - **Workflow 2 (integration):** schedule — Oracle + Prometheus compose; results report.
 - **Workflow 3 (e2e matrix):** Grafana 12.4 and 13.1 — Playwright + alert-rule API test.
-- **Workflow 4 (release):** tag → `mage build` → `.tar.gz` + (opt.) sign.
+- **Workflow 4 (release):** tag `v*` / manual dispatch → `mage buildAll`
+  → `npm run sign` (when the signing token exists) → `mage archive`
+  → `mage validate` → GitHub Release with the `.zip` + `.tar.gz` — created in
+  F13 as `.github/workflows/release.yml` (§18 F13, `docs/release-and-packaging.md` §5.2).
+  The F13 DoD checks: `.tar.gz` produced, `plugin-validator` zero errors, sign
+  documented, full e2e pass.
 
 ---
 
@@ -1060,6 +1065,44 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 **F13 — Documentation, templates, packaging, e2e** · 4 pg
 - README (installation, read-only user, version matrix, exporter guide); alert/panel example templates; `plugin-validator`; `.tar.gz` + sign; full e2e.
 - **DoD:** Release-ready package; every example in the docs works.
+- **✅ Done (2026-08-11):** the DoD — "release-ready package; every example in
+  the docs works" — is met and verified (details and numbers in §21 row 18).
+  **(a) Documentation** — `docs/installation.md` (§1 requirements / version
+  matrix; §2 archive install + `allow_loading_unsigned_plugins`; §3 every
+  datasource field incl. Prometheus proxy, General, Limits; §4 recommended
+  read-only user; §5 official-exporter → Prometheus → proxy guide; §6 usage;
+  §7 troubleshooting; §8 upgrading), `docs/README.md` index, and the repo README
+  gained an **installation** section (quick start, the unsigned-plugin flag,
+  read-only user, exporter/metrics pointer) — all cross-references relative
+  links were converted to absolute URLs so the validator reports zero errors.
+  **(b) Examples that are proven to work** — `examples/dashboard/oracle-overview.json`
+  (`uid: oracle-datasource-overview`) plus its README demonstrates all **three
+  query shapes** on any Oracle: a `CONNECT BY` synthetic-load SQL time series
+  with `$__timeFilter`, a wrapped-`ROWNUM` `user_tables` SQL table, and a
+  Prometheus-proxy `up{job="oracle"}` panel (opt-in). Both SQL panels are now
+  locked by `TestIntegration_DashboardExamples`, which runs them through the
+  real query path and asserts the delivered frames (96-point wide time series +
+  ≤ 20-row table) — "every example works" is a repeatable test, not a
+  screenshot. `examples/readonly_user.sql` provisions the read-only account
+  incl. the `SELECT ON SYS.V_$VERSION` health grant and a DELETE-must-fail
+  verification block. **(c) Packaging + validator** — `mage archive` produces
+  `dist/emreatayy-oracle-datasource-1.0.0.zip` + `.tar.gz` with the single
+  top-level `emreatayy-oracle-datasource/` layout (plugin.json at root, `0755`
+  binaries); `mage validate` runs `plugin-validator` and reports **zero
+  errors** (remaining warnings are all publish-flow, see §21 row 18). **(d)
+  Signing + release automation** — `npm run sign` (`@grafana/sign-plugin`,
+  `GRAFANA_ACCESS_POLICY_TOKEN`, `--signatureType/--rootUrls`) signs `dist/`
+  in place before archiving so `MANIFEST.txt` ships in the zip;
+  `.github/workflows/release.yml` (created with the plan of §17.2 Workflow 4 /
+  `docs/release-and-packaging.md` §5.2) builds → signs when the token exists
+  (else warns + publishes unsigned) → archives → validates → GitHub Release
+  with both archives attached. `docs/release-and-packaging.md` now documents
+  only commands that actually exist in this repo (`mage -l`-verified: no
+  phantom `mage buildBackend`/`mage sign`). **(e) Full e2e + matrix** — the
+  final pass: plugin check **6/6 on Grafana 12.4.0 (:3001) and 13.1.0 (:3002)**,
+  the full Playwright e2e suite **15/15 in ~32 s** against 13.1.0, the full
+  integration suite **16/16** on Oracle 21c XE, and the backend `mage test` +
+  `golangci-lint` clean — the release-ready package is what F13 ships.
 
 **F14 — Ops/optional** · 3–5 pg
 - TLS/Wallet options, TNS names; Alertmanager `ALERTS` view (Layer 3); (opt.) exporter orchestration/health (Option D); column→unit automation.
@@ -1113,7 +1156,7 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 
 ## 21. Assumptions to Verify and Open Decisions
 
-Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0), Grafana 12.4/13.1, and the F0-built plugin. **14 of 14 resolved.**
+Empirical checks run **2026-08-07 → 2026-08-11** against a live Oracle 21c XE (go-ora v2.9.0), Grafana 12.4/13.1, and the F0-built plugin. **18 of 18 resolved.**
 
 | # | Check | Affects |
 |---|---|---|
@@ -1136,6 +1179,7 @@ Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0)
 | 15 | **✅ Verified (2026-08-11, F15 end-to-end on Oracle 21c XE + Grafana 12.4.0 :3001 + 13.1.0 :3002, `TestIntegration_Command` + e2e `tests/command.spec.ts`):** the **command resource** executes only allowlisted one-shot operations, strictly outside the query pipeline. (a) **confirmation is a hard floor** — `confirm:false` → 400 "not confirmed" before any DB work; (b) the **allowlist** runs `BEGIN…END` blocks (each statement a `DBMS_SCHEDULER.<proc>` call — incl. key-value `SET_ATTRIBUTE` — or a plain procedure call) and `SELECT <expr> FROM DUAL`; it rejects `DROP TABLE`, a `DELETE` block, comments, control flow and unbalanced/unterminated statements with readable messages (the DDL/DML **never reach Oracle** — the audit table survives); (c) **scheduler lifecycle** on 21c: `DISABLE`→`DISABLED`, `ENABLE`→`SCHEDULED` (21c reports SCHEDULED, not ENABLED), **`RUN_JOB('JOB', use_current_session => FALSE)`** (async, ~100 ms return) → poll `RUNNING`, `STOP_JOB` → back to `SCHEDULED`; (d) a **procedure side-effect** (audit row) and a **function value** via `SELECT F15_ECHO(21) FROM DUAL` → `message:"42"` both work; (e) a bad job name surfaces the §13-mapped `ORA-` error readably. **Two Oracle 21c findings documented in §12.1/§12.3:** `DBMS_SCHEDULER.START_JOB` **no longer exists in 21c** (absent from `ALL_PROCEDURES` even for SYS; calling it → compile-time `PLS-00302: component 'START_JOB' must be declared`, not a privilege error) — `RUN_JOB` is the documented replacement; and `ALTER ANY JOB` is gone from 21c's `system_privilege_map`, consolidated into **`MANAGE SCHEDULER`**. The e2e drives the real button + confirmation dialog: the default `SELECT 1 … FROM DUAL` renders its value inline, and a monaco edit to DDL surfaces the inline "must be a BEGIN" rejection. Full integration suite + unit + lint + frontend build + plugin check 6/6 on both versions + full e2e suite (16 on 13.1) green | 12 / F15 |
 | 16 | **✅ Verified (2026-08-11, F11 end-to-end on Oracle 21c XE + Grafana 12.4.0 :3001 + 13.1.0 :3002):** the **self-metrics** DoD is proven at the real seam — after a panel query on each Grafana, **`GET /metrics/plugins/emreatayy-oracle-datasource`** (Grafana's per-plugin endpoint, `pluginMetricsEndpoint`, backed by the `CollectMetrics` RPC) returns `oracle_datasource_query_total{datasource="P7F605F7554A4A003",mode="sql"}=1`, the `oracle_datasource_query_duration` histogram (1 sample), and — after a guard-rejected DML POST — `oracle_datasource_errors_total{…,mode="sql"}=1`; the label value is the real datasource UID and no series ever lands in the main `/metrics` (the dedicated plugin endpoint is where Grafana serves backend-plugin metrics). **Log hygiene** DoD proven by `TestLogHygiene`: the guard-rejection `Warn` and failure `Error` entries carry the redacted error but **never** the SQL text or the configured password, and the execution `Debug` entry carries only `datasource`/`mode`/`refId`; the API-level probe of the same DML rejection returns "read-only guard: \"DELETE\" is not allowed…" with no SQL body or credentials. A full `grep` of the backend confirms the only logged strings are identifiers and `safeMessage`-shaped messages. **§15 audit** re-confirms secureJsonData credentials, F3 variable escaping, the ADR-7 read-only guard, the F15 allowlist + confirm + audit, and the F6 SSRF-safe Prom URL. `TestQueryRecorder`, `TestQueryData_MetricsLabels` (UID from `PluginContext` reaches `{datasource, mode}` labels), `TestMetrics_RegisteredOnDefaultGatherer`, `TestLogHygiene` and `TestIntegration_QueryMetrics` (real SELECT → 1 `sql`-mode count, 0 errors, 1 duration sample) green; full integration suite ×2 stable; lint 0 issues | 15 / F11 |
 | 17 | **✅ Verified (2026-08-11, F12 measured on Oracle 21c XE, `TestIntegration_MaxRows` + `TestIntegration_PoolUnderLoad` + `TestIntegration_CancelLongQuery` + `TestReadResponseBody`):** the §18 F12 DoD — "100k+ rows, cancellation, and pool behavior under load **measured**" — is proven with real numbers, not assumptions. (a) **100k+ rows:** `SELECT LEVEL … CONNECT BY LEVEL <= 120000` with `maxRows=100000` is **stopped at 100000 rows in ~55 ms**; the frame carries the `maxRows` **truncation `DataNotice`** (severity warning) and `oracle_datasource_queries_truncated_total{mx-uid,sql}` bumps to 1 while `rows_scanned_total` = 100500 (control 500 + capped 100000); a 500-row control query truncates nothing. (b) **cancellation:** a heavy `SELECT COUNT(*) … CONNECT BY LEVEL <= 1000000000` with a 300 ms context returns **ORA-01013 in ~311 ms** — cancellation stops the work (error, never a partial frame), and the whole heavy path stays well inside the 30 s query timeout. (c) **pool under load:** 20 concurrent queries over the 5-connection pool complete in **~365 ms** with the **sampled peak open connections never exceeding 5** (`MaxOpenConns` cap honored — sql.DB queues the overflow: `WaitCount=15`, `WaitDuration≈2.4 s`) and the pool **drains to `Idle=1`** after the load (`db.Stats()` final: `OpenConnections:1 Idle:1`); `Stats().MaxOpenConnections=5` confirms the settings→pool wiring. The pool parameters are now applied by the integration helper exactly as production `NewDatasource` does, so the whole suite exercises real pool behaviour. (d) **Prometheus response size:** the 64 MiB cap (`readResponseBody`) returns a readable "response exceeds the size limit" error instead of a truncated-JSON parse failure — unit-tested at small limits. Full integration suite 15/15, unit + lint 0 issues, ×2 stable | 18 F12 / §5.1 / §9.5 |
+| 18 | **✅ Verified (2026-08-11, F13 examples + packaging on Oracle 21c XE + both Grafana lines):** the §18 F13 DoD — "release-ready package; every example in the docs works" — is proven end-to-end. (a) **every example works:** `TestIntegration_DashboardExamples` runs the two SQL panels of `examples/dashboard/oracle-overview.json` through the production query path on a real Oracle. The synthetic-load panel (`CONNECT BY … 96` with `$__timeFilter(ts)`, `format: time_series`) returns a **wide** frame (`FrameTypeTimeSeriesWide` — applicable because the query has **no dimension column**, §7.3 rule 4) of **96 rows**: nullable `TS` time field + nullable `LOAD` float64 field whose values are a strict 1..96 saw-tooth; the `user_tables` panel (`SELECT * FROM (… ORDER BY table_name) WHERE ROWNUM <= 20`, `format: table`) returns **≤ 20 rows** with `TABLE_NAME` (nullable string), `NUM_ROWS` (nullable **float64** — `user_tables.num_rows` is a precision-unconstrained bare `NUMBER`, which §6.2 classifies as float, not a >15-digit large number) and `LAST_ANALYZED` (nullable time, NULLs preserved). (b) **release-ready packaging:** `mage archive` produces `dist/emreatayy-oracle-datasource-1.0.0.zip` + `.tar.gz`, each a single top-level `emreatayy-oracle-datasource/` directory with `plugin.json` at its root, backend binaries `0755`, LICENSE/README/img present (unzip-verified on a fresh copy); `mage validate` runs `@grafana/plugin-validator` against the archive with **zero errors** — the 10 remaining warnings are all publish-flow (private-repo 404s clear when the repo goes public, `unsigned` clears at sign time, screenshots/account/sponsorship are catalog items). (c) **signing + release automation:** `npm run sign` (`@grafana/sign-plugin`, `GRAFANA_ACCESS_POLICY_TOKEN`, `--signatureType private|public` / `--rootUrls`) signs `dist/` **in place before** `mage archive` so `MANIFEST.txt` ships inside the archives; `.github/workflows/release.yml` (created) runs build → sign-if-token → archive → validate → GitHub Release on a `v*` tag or manual dispatch and **degrades gracefully** (warning + unsigned publish) when no signing token exists. Full integration suite **16/16** green, plugin check **6/6** on Grafana 12.4.0 + 13.1.0, and the full Playwright e2e suite **15/15** on 13.1.0 (~32 s) | 18 F13 / docs §2–§5 |
 
 - `sessionTimeZone` default: `UTC` (recommended) — DATE/TIMESTAMP conversion follows it.
 - `maxRows` default: `100_000` (recommended); `maxSeries`: `1000`.

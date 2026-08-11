@@ -1,0 +1,181 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "target": { "limit": 100, "matchAny": false, "tags": [], "type": "dashboard" },
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "emreatayy-oracle-datasource", "uid": "<DS_UID>" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "legend": { "calcs": ["last", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "emreatayy-oracle-datasource", "uid": "<DS_UID>" },
+          "editorMode": "code",
+          "format": "time_series",
+          "mode": "sql",
+          "refId": "A",
+          "sql": "SELECT ts, load FROM (SELECT SYSDATE - (LEVEL - 1) / 96 AS ts, LEVEL AS load FROM DUAL CONNECT BY LEVEL <= 96) WHERE $__timeFilter(ts)"
+        }
+      ],
+      "title": "Synthetic load — SQL time series (CONNECT BY over DUAL)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "emreatayy-oracle-datasource", "uid": "<DS_UID>" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "NUM_ROWS" },
+            "properties": [{ "id": "custom.cellOptions", "value": { "type": "auto" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "LAST_ANALYZED" },
+            "properties": [
+              { "id": "unit", "value": "dateTimeFromNow" },
+              { "id": "custom.cellOptions", "value": { "type": "date-time" } }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "NUM_ROWS" }]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "emreatayy-oracle-datasource", "uid": "<DS_UID>" },
+          "editorMode": "code",
+          "format": "table",
+          "mode": "sql",
+          "refId": "A",
+          "sql": "SELECT * FROM (SELECT table_name, num_rows, last_analyzed FROM user_tables ORDER BY table_name) WHERE ROWNUM <= 20"
+        }
+      ],
+      "title": "User tables — SQL table (user_tables)",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "emreatayy-oracle-datasource", "uid": "<DS_UID>" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 9 },
+      "id": 3,
+      "options": {
+        "legend": { "calcs": ["last"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "emreatayy-oracle-datasource", "uid": "<DS_UID>" },
+          "editorMode": "code",
+          "instant": false,
+          "legendFormat": "{{ job }}",
+          "mode": "prometheus",
+          "promql": "up{job=\"oracle\"}",
+          "refId": "A"
+        }
+      ],
+      "title": "Oracle exporter up — Prometheus proxy mode",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["oracle"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "Oracle datasource — overview",
+  "uid": "oracle-datasource-overview",
+  "version": 1,
+  "weekStart": ""
+}

@@ -1006,3 +1006,95 @@ func TestIntegration_PoolUnderLoad(t *testing.T) {
 	t.Logf("measured: %d concurrent queries over %d-conn pool finished in %v; peak open = %d; final stats = %+v",
 		workers, 5, elapsed, measuredPeak, st)
 }
+
+// TestIntegration_DashboardExamples is the F13 DoD "every example in the docs
+// works" (report §18 F13) made repeatable: it runs the two SQL queries shipped
+// in examples/dashboard/oracle-overview.json against a real Oracle and asserts
+// the exact frame shapes the dashboard README promises. Panel 1 (synthetic
+// CONNECT BY time series) must come back as a long time-series frame with a
+// time + numeric field for all 96 generated points once the panel's range
+// covers them; panel 2 (wrapped-ROWNUM user_tables table) must come back as a
+// table frame of at most 20 rows with the TABLE_NAME/NUM_ROWS/LAST_ANALYZED
+// columns. The third panel is Prometheus-proxy mode — its backend path is
+// covered by the F6 proxy tests, and the dashboard README already marks it
+// "skipped if you did not enable the proxy".
+func TestIntegration_DashboardExamples(t *testing.T) {
+	ds := newIntegrationDatasource(t)
+	defer ds.Dispose()
+	ctx := context.Background()
+
+	// The panels default to now-6h→now, which shows only the last 24 of the 96
+	// 15-minute points. Widen to a 48h window ending slightly in the future so
+	// all 96 generated points (they span the day before SYSDATE) are in range.
+	tr := backend.TimeRange{
+		From: time.Now().Add(-48 * time.Hour),
+		To:   time.Now().Add(24 * time.Hour),
+	}
+
+	// Panel 1 — Synthetic load: SQL time series (CONNECT BY over DUAL).
+	// With no dimension column the series frame comes back WIDE (report §7.3
+	// rule 4): one time field + one value field, both nullable.
+	run := func(raw, format string) *data.Frame {
+		t.Helper()
+		resp := ds.query(ctx, backend.DataQuery{
+			RefID:         "A",
+			TimeRange:     tr,
+			Interval:      time.Minute,
+			MaxDataPoints: 1000,
+			JSON:          json.RawMessage(`{"sql":` + mustJSON(raw) + `,"format":` + mustJSON(format) + `}`),
+		}, "dash-uid")
+		if resp.Error != nil {
+			t.Fatalf("query error: %v", resp.Error)
+		}
+		if len(resp.Frames) != 1 {
+			t.Fatalf("frames = %d, want 1", len(resp.Frames))
+		}
+		return resp.Frames[0]
+	}
+
+	frame := run(`SELECT ts, load FROM (SELECT SYSDATE - (LEVEL - 1) / 96 AS ts, LEVEL AS load FROM DUAL CONNECT BY LEVEL <= 96) WHERE $__timeFilter(ts)`, "time_series")
+	if got := frame.Rows(); got != 96 {
+		t.Errorf("time-series rows = %d, want 96 (all points in the widened range)", got)
+	}
+	if frame.Meta == nil || frame.Meta.Type != data.FrameTypeTimeSeriesWide {
+		t.Errorf("time-series meta = %+v, want FrameTypeTimeSeriesWide", frame.Meta)
+	}
+	if len(frame.Fields) != 2 {
+		t.Fatalf("time-series fields = %d, want 2 (ts, load)", len(frame.Fields))
+	}
+	if frame.Fields[0].Name != "TS" || frame.Fields[0].Type() != data.FieldTypeNullableTime {
+		t.Errorf("field[0] = %q/%v, want TS/nullable time", frame.Fields[0].Name, frame.Fields[0].Type())
+	}
+	if frame.Fields[1].Name != "LOAD" || frame.Fields[1].Type() != data.FieldTypeNullableFloat64 {
+		t.Errorf("field[1] = %q/%v, want LOAD/nullable float64", frame.Fields[1].Name, frame.Fields[1].Type())
+	}
+	// Saw-tooth: the 96 LEVEL counters are 1..96 and strictly increasing.
+	last := 0.0
+	for i := 0; i < 96; i++ {
+		v := *frame.Fields[1].At(i).(*float64)
+		if v < last || v < 1 || v > 96 {
+			t.Fatalf("load[%d] = %v outside [1..96] saw-tooth", i, v)
+		}
+		last = v
+	}
+
+	// Panel 2 — User tables: SQL table (user_tables, wrapped ROWNUM). Table
+	// frames are nullable columns (report §6.2), so each field is *T.
+	frame = run(`SELECT * FROM (SELECT table_name, num_rows, last_analyzed FROM user_tables ORDER BY table_name) WHERE ROWNUM <= 20`, "table")
+	if got := frame.Rows(); got > 20 {
+		t.Errorf("table rows = %d, want <= 20 (wrapped ROWNUM cap)", got)
+	}
+	if len(frame.Fields) != 3 {
+		t.Fatalf("table fields = %d, want 3 (TABLE_NAME, NUM_ROWS, LAST_ANALYZED)", len(frame.Fields))
+	}
+	if frame.Fields[0].Name != "TABLE_NAME" || frame.Fields[0].Type() != data.FieldTypeNullableString {
+		t.Errorf("field[0] = %q/%v, want TABLE_NAME/nullable string", frame.Fields[0].Name, frame.Fields[0].Type())
+	}
+	if frame.Fields[1].Name != "NUM_ROWS" || frame.Fields[1].Type() != data.FieldTypeNullableFloat64 {
+		t.Errorf("field[1] = %q/%v, want NUM_ROWS/nullable float64", frame.Fields[1].Name, frame.Fields[1].Type())
+	}
+	if frame.Fields[2].Name != "LAST_ANALYZED" || frame.Fields[2].Type() != data.FieldTypeNullableTime {
+		t.Errorf("field[2] = %q/%v, want LAST_ANALYZED/nullable time (NULL handling)", frame.Fields[2].Name, frame.Fields[2].Type())
+	}
+	t.Logf("dashboard SQL panels verified: %d time-series points + user_tables table of %d rows", 96, frame.Rows())
+}

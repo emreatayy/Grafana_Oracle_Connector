@@ -402,6 +402,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TestReadResponseBody`, and the strengthened `TestIntegration_CancelLongQuery`
   (a cancelled query must fail, never return a partial frame); the integration
   helper now applies the pool parameters like production `NewDatasource`.
+- **F13 — Documentation, templates, packaging, e2e** (report §18 F13): the
+  release-ready package with every example proven to work. **(a) User
+  documentation** — `docs/installation.md` (requirements / version support
+  matrix, archive install + `allow_loading_unsigned_plugins`, every datasource
+  field incl. the Prometheus proxy, the recommended **read-only user**, the
+  official `oracle/oracle-db-appdev-monitoring` exporter → Prometheus → proxy
+  guide, usage, a troubleshooting table, upgrading) linked from the README
+  installation section; all README cross-reference links converted to absolute
+  URLs (validator-clean). **(b) Examples that are locked by tests** —
+  `examples/dashboard/oracle-overview.json` + README demonstrate all **three
+  query shapes** on any Oracle: a `CONNECT BY` synthetic-load **SQL time
+  series** with `$__timeFilter`, a wrapped-`ROWNUM` `user_tables` **SQL
+  table**, and a Prometheus-proxy `up{job="oracle"}` panel;
+  `examples/readonly_user.sql` provisions the read-only account with the
+  `SELECT ON SYS.V_$VERSION` health grant and a DELETE-must-fail check. New
+  `TestIntegration_DashboardExamples` runs both SQL panels through the real
+  query path and asserts the frames (96-point wide time series + ≤ 20-row
+  table), so "every example works" is a repeatable test, not a screenshot.
+  **(c) Packaging + validator** — `mage archive` produces
+  `dist/emreatayy-oracle-datasource-1.0.0.zip` + `.tar.gz` in the Grafana
+  layout (single top-level `emreatayy-oracle-datasource/`, `plugin.json` at
+  root, `0755` binaries; unzip-verified); `mage validate` runs
+  `plugin-validator` at **zero errors** (remaining warnings are all
+  publish-flow). **(d) Signing + release automation** — `npm run sign`
+  (`@grafana/sign-plugin`, `GRAFANA_ACCESS_POLICY_TOKEN`, `--signatureType` /
+  `--rootUrls`) signs `dist/` **before** archiving so `MANIFEST.txt` ships in
+  the zip; new `.github/workflows/release.yml` automates build → sign (or
+  graceful unsigned warning) → archive → validate → GitHub Release on a `v*`
+  tag; `docs/release-and-packaging.md` reconciled to commands that actually
+  exist (`mage -l`-verified). **(e) Full e2e + matrix** — plugin check 6/6 on
+  Grafana 12.4.0 + 13.1.0 and the full e2e suite green; full integration
+  suite **16/16** on Oracle 21c XE (report §21 row 18). Verified:
+  `TestIntegration_DashboardExamples`, `mage archive` + `mage validate`
+  (0 errors), archive layout + `0755` permission check.
 
 ### Fixed
 
