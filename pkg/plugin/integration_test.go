@@ -48,6 +48,7 @@ func newIntegrationDatasource(t *testing.T) *Datasource {
 			MaxIdleConns:       1,
 			ConnMaxLifetimeSec: 300,
 			QueryTimeoutSec:    30,
+			CommandTimeoutSec:  30,
 			MaxRows:            10000,
 			MaxSeries:          1000,
 			SessionTimeZone:    "UTC",
@@ -625,6 +626,178 @@ func TestIntegration_Macros(t *testing.T) {
 		if _, err := query("SELECT id FROM gox_f2 WHERE id = ${missing}", ""); err == nil ||
 			!strings.Contains(err.Error(), "unresolved variable") {
 			t.Errorf("err = %v, want unresolved variable error", err)
+		}
+	})
+}
+
+// TestIntegration_Command exercises the F15 "command" resource against the
+// harness Oracle (report §12 DoD): start/stop/enable/disable a scheduler job,
+// call a procedure with an observable side effect, call a function via
+// SELECT … FROM DUAL, and prove the allowlist rejects DDL/DML and the
+// confirmation flag gates every execution.
+func TestIntegration_Command(t *testing.T) {
+	ds := newIntegrationDatasource(t)
+	// Register dispose first: t.Cleanup runs LIFO, so the drop-cleanup below
+	// runs before the pool is closed.
+	t.Cleanup(ds.Dispose)
+	ctx := context.Background()
+
+	// Create the scheduler jobs, procedure, function and audit table with a
+	// direct connection: CREATE/DROP are DDL and deliberately NOT allowlisted —
+	// the command resource must never run them (report §12.3). This setup also
+	// proves go-ora ExecContext runs anonymous PL/SQL blocks (§21 row 8).
+	setup := []string{
+		`BEGIN DBMS_SCHEDULER.CREATE_JOB(job_name => 'F15_TEST_JOB', job_type => 'PLSQL_BLOCK', job_action => 'BEGIN NULL; END;', enabled => FALSE, auto_drop => FALSE); END;`,
+		`BEGIN DBMS_SCHEDULER.CREATE_JOB(job_name => 'F15_SLEEP_JOB', job_type => 'PLSQL_BLOCK', job_action => 'BEGIN DBMS_LOCK.SLEEP(30); END;', enabled => FALSE, auto_drop => FALSE); END;`,
+		`CREATE TABLE F15_AUDIT (id NUMBER PRIMARY KEY)`,
+		`CREATE OR REPLACE PROCEDURE F15_PROC(v NUMBER) AS BEGIN INSERT INTO F15_AUDIT(id) VALUES (v); END;`,
+		`CREATE OR REPLACE FUNCTION F15_ECHO(v NUMBER) RETURN NUMBER AS BEGIN RETURN v * 2; END;`,
+	}
+	for _, q := range setup {
+		if _, err := ds.db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("setup %q: %v", q, err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, q := range []string{
+			// force => TRUE so a leftover async RUN_JOB instance (start_then_stop)
+			// cannot block the drop; the DDL drops below are idempotent-ish and
+			// errors are tolerated because the datasource may already be torn down.
+			`BEGIN DBMS_SCHEDULER.DROP_JOB('F15_SLEEP_JOB', force => TRUE); END;`,
+			`BEGIN DBMS_SCHEDULER.DROP_JOB('F15_TEST_JOB', force => TRUE); END;`,
+			`DROP TABLE F15_AUDIT`,
+			`DROP PROCEDURE F15_PROC`,
+			`DROP FUNCTION F15_ECHO`,
+		} {
+			if _, err := ds.db.ExecContext(context.Background(), q); err != nil {
+				t.Logf("cleanup %q: %v", q, err)
+			}
+		}
+	})
+
+	// run posts one command through the resource handler (the path the UI
+	// "Run command" button takes).
+	run := func(t *testing.T, sql string, confirm bool) *backend.CallResourceResponse {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"sql": sql, "confirm": confirm})
+		return callResource(ds, &backend.CallResourceRequest{
+			Path: "command",
+			Body: body,
+			PluginContext: backend.PluginContext{
+				DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{UID: "integration-ds"},
+				User:                       &backend.User{Login: "tester"},
+			},
+		})
+	}
+	okBody := func(t *testing.T, resp *backend.CallResourceResponse) commandResponse {
+		t.Helper()
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, resp.Body)
+		}
+		var res commandResponse
+		if err := json.Unmarshal(resp.Body, &res); err != nil {
+			t.Fatalf("body is not a commandResponse: %v (%s)", err, resp.Body)
+		}
+		if !res.OK {
+			t.Fatalf("ok = false, want true; body = %s", resp.Body)
+		}
+		return res
+	}
+	jobState := func(name string) string {
+		var state string
+		if err := ds.db.QueryRowContext(ctx, `SELECT state FROM user_scheduler_jobs WHERE job_name = :1`, name).Scan(&state); err != nil {
+			t.Fatalf("read job %s state: %v", name, state)
+		}
+		return state
+	}
+
+	t.Run("unconfirmed command is rejected", func(t *testing.T) {
+		resp := run(t, "BEGIN DBMS_SCHEDULER.DISABLE('F15_TEST_JOB'); END;", false)
+		if resp.Status != http.StatusBadRequest || !strings.Contains(string(resp.Body), "not confirmed") {
+			t.Errorf("status = %d body = %s, want 400 confirmation error", resp.Status, resp.Body)
+		}
+	})
+
+	t.Run("disable then enable a scheduler job", func(t *testing.T) {
+		okBody(t, run(t, "BEGIN DBMS_SCHEDULER.DISABLE('F15_TEST_JOB'); END;", true))
+		if got := jobState("F15_TEST_JOB"); got != "DISABLED" {
+			t.Errorf("state after DISABLE = %q, want DISABLED", got)
+		}
+		okBody(t, run(t, "BEGIN DBMS_SCHEDULER.ENABLE('F15_TEST_JOB'); END;", true))
+		// 21c reports an enabled, schedulable job as SCHEDULED (not ENABLED);
+		// accept both so the assertion holds across Oracle versions.
+		if got := jobState("F15_TEST_JOB"); got != "ENABLED" && got != "SCHEDULED" {
+			t.Errorf("state after ENABLE = %q, want ENABLED or SCHEDULED", got)
+		}
+	})
+
+	t.Run("start then stop a running job", func(t *testing.T) {
+		okBody(t, run(t, "BEGIN DBMS_SCHEDULER.ENABLE('F15_SLEEP_JOB'); END;", true))
+		// START_JOB was removed from DBMS_SCHEDULER in Oracle 21c; RUN_JOB with
+		// use_current_session => FALSE is the documented replacement and launches
+		// the instance asynchronously (report §12.4, verified against the 21c docs).
+		okBody(t, run(t, "BEGIN DBMS_SCHEDULER.RUN_JOB('F15_SLEEP_JOB', use_current_session => FALSE); END;", true))
+		// The instance launch is asynchronous; STOP on a not-yet-running job
+		// raises ORA-27366, so poll for the RUNNING state first.
+		deadline := time.Now().Add(15 * time.Second)
+		for time.Now().Before(deadline) && jobState("F15_SLEEP_JOB") != "RUNNING" {
+			time.Sleep(100 * time.Millisecond)
+		}
+		if got := jobState("F15_SLEEP_JOB"); got != "RUNNING" {
+			t.Fatalf("sleep job never reached RUNNING, state = %q", got)
+		}
+		okBody(t, run(t, "BEGIN DBMS_SCHEDULER.STOP_JOB('F15_SLEEP_JOB'); END;", true))
+		// 21c returns a stopped schedulable job to SCHEDULED (not STOPPED).
+		if got := jobState("F15_SLEEP_JOB"); got != "STOPPED" && got != "SCHEDULED" {
+			t.Errorf("state after STOP = %q, want STOPPED or SCHEDULED", got)
+		}
+	})
+
+	t.Run("call a procedure with a side effect", func(t *testing.T) {
+		okBody(t, run(t, "BEGIN F15_PROC(7); END;", true))
+		var n int
+		if err := ds.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM F15_AUDIT WHERE id = 7`).Scan(&n); err != nil {
+			t.Fatalf("read audit count: %v", err)
+		}
+		if n != 1 {
+			t.Errorf("audit rows for id 7 = %d, want 1", n)
+		}
+	})
+
+	t.Run("function call returns its value", func(t *testing.T) {
+		res := okBody(t, run(t, "SELECT F15_ECHO(21) FROM DUAL", true))
+		if res.Message != "42" {
+			t.Errorf("message = %q, want 42", res.Message)
+		}
+	})
+
+	t.Run("allowlist rejects DDL and DML", func(t *testing.T) {
+		for _, sql := range []string{
+			"DROP TABLE F15_AUDIT",
+			"BEGIN DELETE FROM F15_AUDIT; END;",
+		} {
+			resp := run(t, sql, true)
+			if resp.Status != http.StatusBadRequest {
+				t.Errorf("%q status = %d, want 400", sql, resp.Status)
+			}
+			if !strings.Contains(string(resp.Body), "must be a BEGIN") &&
+				!strings.Contains(string(resp.Body), "not allowlisted") {
+				t.Errorf("%q body = %s, want a readable allowlist rejection", sql, resp.Body)
+			}
+		}
+		// The attempted DROP never touched the table.
+		if _, err := ds.db.QueryContext(ctx, `SELECT COUNT(*) FROM F15_AUDIT`); err != nil {
+			t.Errorf("table F15_AUDIT does not survive the attempted DROP: %v", err)
+		}
+	})
+
+	t.Run("database error surfaces readably", func(t *testing.T) {
+		resp := run(t, "BEGIN DBMS_SCHEDULER.DISABLE('F15_NO_SUCH_JOB'); END;", true)
+		if resp.Status != http.StatusInternalServerError {
+			t.Errorf("status = %d, want 500", resp.Status)
+		}
+		if !strings.Contains(string(resp.Body), "ORA-") {
+			t.Errorf("body = %s, want a readable ORA error", resp.Body)
 		}
 	})
 }

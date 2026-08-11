@@ -328,6 +328,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   screen (config-editor e2e asserts the alert text); `TestHealthResult_Shapes`
   (all four §13 states) + `TestIntegration_Health`/`_BadPassword`/`_BadHost` on
   Oracle 21c; full e2e suite 13/13; plugin check 6/6 on 12.4 + 13.1.
+- **F15 — Command execution (operations UI)** (report §12 + §18): a **"Run
+  command"** button in the query editor posts the current SQL as an anonymous
+  PL/SQL command to a new backend **`command` resource** under
+  `CallResourceHandler` — strictly outside the query pipeline (never re-run by
+  panel refresh, alerting or variables). The backend **always requires
+  `confirm:true`** (400 "not confirmed" otherwise), then checks the **allowlist**
+  (§12.3, ADR-13): `BEGIN…END;` blocks whose statements are
+  `DBMS_SCHEDULER.<proc>(…)` (any procedure, incl. key-value `SET_ATTRIBUTE`) or
+  plain procedure calls, plus `SELECT <expr> FROM DUAL` (function value returned
+  inline); the scanner is string/paren-aware and rejects comments, DDL/DML,
+  control flow, unbalanced or unterminated statements, and the escape-hatch
+  packages `DBMS_SQL` / `DBMS_SYS_SQL` / `DBMS_UTILITY`. Execution is bound by a
+  new `commandTimeoutSec` (default 10 s) and every command is **audit-logged**
+  (datasource UID, user, allowlist-passed statement, password-redacted). The UI
+  gates the action with a confirmation dialog (config-toggleable — disabling it
+  only skips the dialog, never the backend floor) and renders the result or the
+  readable ORA-mapped error inline under the button. **Oracle 21c findings
+  (§12.1):** `DBMS_SCHEDULER.START_JOB` was **removed in 21c** (compile-time
+  `PLS-00302`; absent from the spec even for SYS) — `RUN_JOB('JOB',
+  use_current_session => FALSE)` is the documented replacement and drives the
+  start/stop flow; `ALTER ANY JOB` is likewise gone, consolidated into
+  `MANAGE SCHEDULER`. Verified: `TestIntegration_Command` on Oracle 21c
+  (confirm gate, DISABLE→DISABLED / ENABLE→SCHEDULED / RUN_JOB async→RUNNING /
+  STOP_JOB→SCHEDULED, procedure side-effect, function value "42", DDL/DML
+  rejected with the table surviving, readable ORA on a bad job name), e2e
+  `tests/command.spec.ts` on **12.4 + 13.1** (value rendered inline through the
+  dialog; DDL surfaces the inline rejection), full e2e suite 16/16 on 13.1,
+  plugin check 6/6 on 12.4 + 13.1.
 
 ### Fixed
 

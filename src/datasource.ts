@@ -30,6 +30,15 @@ interface MetadataColumnsResponse {
   columns: MetadataColumn[];
 }
 
+// F15 Run-command result (report §12.1): a structured {ok, message} rendered
+// inline under the button. rowsAffected is present when the driver reports one
+// (PL/SQL blocks typically do not).
+export interface CommandResponse {
+  ok: boolean;
+  message: string;
+  rowsAffected?: number;
+}
+
 export class DataSource extends DataSourceWithBackend<MyQuery, MyDataSourceOptions> {
   constructor(instanceSettings: DataSourceInstanceSettings<MyDataSourceOptions>) {
     super(instanceSettings);
@@ -84,6 +93,14 @@ export class DataSource extends DataSourceWithBackend<MyQuery, MyDataSourceOptio
   async getMetadataColumns(table: string): Promise<MetadataColumn[]> {
     const resp = await this.getResource<MetadataColumnsResponse>('metadata/columns', { table });
     return resp?.columns ?? [];
+  }
+
+  // --- Command execution (F15, report §12) --------------------------------
+  // One-shot operational actions (scheduler jobs, procedure calls). The backend
+  // resource handler always requires confirm=true (report §12.3) and only runs
+  // allowlisted commands — the query pipeline never carries them.
+  async runCommand(sql: string, confirm: boolean): Promise<CommandResponse> {
+    return this.postResource<CommandResponse>('command', { sql, confirm });
   }
 
   getDefaultQuery(_: CoreApp): Partial<MyQuery> {

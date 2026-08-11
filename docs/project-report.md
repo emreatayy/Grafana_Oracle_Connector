@@ -608,8 +608,17 @@ Query editor  ── "Run command" button  ──>  datasource.postResource('com
   - `BEGIN DBMS_SCHEDULER.STOP_JOB('MY_JOB'); END;`
   - `BEGIN DBMS_SCHEDULER.ENABLE('MY_JOB'); END;`
   - `BEGIN DBMS_SCHEDULER.DISABLE('MY_JOB'); END;`
-  - `BEGIN DBMS_SCHEDULER.START_JOB('MY_JOB'); END;`
+  - `BEGIN DBMS_SCHEDULER.RUN_JOB('MY_JOB', use_current_session => FALSE); END;` — start a job on 21c
   - `BEGIN pkg.my_proc('ABC', 42); END;` (procedure) / `SELECT pkg.my_func(...) FROM DUAL` (function)
+- **`DBMS_SCHEDULER.START_JOB` was removed in Oracle 21c** — the 21c package spec has
+  no `START_JOB` subprogram (verified against the 21c `DBMS_SCHEDULER` docs and
+  `ALL_PROCEDURES`); `RUN_JOB` with `use_current_session => FALSE` is the
+  documented replacement and launches the instance **asynchronously**, so it pairs
+  with `STOP_JOB` exactly like the old `START_JOB`/`STOP_JOB` workflow. Calling
+  `START_JOB` on 21c fails at compile time with `PLS-00302: component 'START_JOB'
+  must be declared` (not a privilege error). The pre-21c privilege set also
+  changed: `ALTER ANY JOB` no longer exists in `system_privilege_map` — 21c
+  consolidated the scheduler privileges into `MANAGE SCHEDULER` (see §12.3).
 - Parameters in v1 are typed as **literals** inside the block (no bind-parameter UI); bindings are a later phase.
 - Result: structured `{ ok, message, rowsAffected? }` rendered inline; errors shown readably (ORA mapping reused from §13).
 
@@ -624,7 +633,8 @@ A mutation flag on a `DataQuery` would be sent through `QueryData`, which Grafan
   - `SELECT <expr> FROM DUAL` (function calls returning a value).
 - **Rejected:** DDL/DML outside the allowlist, `DROP`, `TRUNCATE`, multi-statement blocks with side effects beyond the allowlist, anything starting with a non-allowlisted keyword.
 - A **confirmation dialog** precedes execution (config-toggleable); every command is **audit-logged** (Grafana `log`, fields: datasource UID, user, allowlist pass/fail, statement — never bind values).
-- Accounts: the same Oracle user is used for queries and commands; the query path keeps its read-only guard, the command path is restricted by the allowlist (single-account model). Documentation recommends minimal extra grants (`MANAGE SCHEDULER` or per-job `ALTER`/`EXECUTE` on `DBMS_SCHEDULER`; `EXECUTE` on the procedures to call).
+- Accounts: the same Oracle user is used for queries and commands; the query path keeps its read-only guard, the command path is restricted by the allowlist (single-account model). Documentation recommends minimal extra grants: on 21c, **`MANAGE SCHEDULER`** (which consolidated the old `CREATE ANY JOB` / `ALTER ANY JOB` set — `ALTER ANY JOB` no longer exists in 21c's `system_privilege_map`) or, for jobs the user owns, nothing beyond the defaults; **`EXECUTE`** on the procedures/functions to call.
+- `maxRows`/`maxSeries` do not apply; a separate `commandTimeoutSec` (default 10s) bounds execution.
 - `maxRows`/`maxSeries` do not apply; a separate `commandTimeoutSec` (default 10s) bounds execution.
 
 ### 12.4 Status reads (complementary)
@@ -990,6 +1000,49 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 **F15 — Command execution (operations UI)** · 3 pg
 - "Run command" button (query editor) → `postResource('command', …)` → backend `CallResourceHandler`; allowlist (12.3); `ExecContext` for anonymous PL/SQL blocks; confirmation dialog; audit log; `commandTimeoutSec`.
 - **DoD:** Start/stop/enable/disable a scheduler job and call a procedure from the query editor; allowlist rejects DDL; e2e on 12.4 + 13.1.
+- **Status (2026-08-11):** ✅ **done.**
+  - **Backend resource (12.1/12.3, ADR-13):** `command` under `CallResource`
+    (`pkg/plugin/command.go`). Hard requirements enforced before any DB work:
+    `confirm:true` (else 400 "not confirmed"), then the **allowlist** — a
+    `BEGIN…END;` block whose statements are `DBMS_SCHEDULER.<proc>(…)` (any
+    procedure, incl. key-value `SET_ATTRIBUTE`) or plain procedure calls, or a
+    `SELECT <expr> FROM DUAL` (function value). The scanner is string- and
+    paren-aware (a `;` or `FROM` inside a literal cannot hide statements / a
+    non-DUAL target); balanced parens enforced; and **denylisted packages**
+    `DBMS_SQL` / `DBMS_SYS_SQL` / `DBMS_UTILITY` reject the escape-hatch
+    procedures that could run arbitrary SQL (deliberate §12.3 hardening beyond
+    the report). Comments, DDL/DML, `DROP`, `TRUNCATE`, control flow and
+    unterminated statements are all rejected with readable messages. Execution:
+    `SELECT…FROM DUAL` → `QueryRow` (value in `message`), block → `ExecContext`
+    with `commandTimeoutSec` bound (default 10s; 0 = no bound); failures return
+    500 with the §13 ORA mapping, redacted. Every execution is **audit-logged**
+    (datasource UID, user, allowlist-passed statement collapsed + password
+    redacted — never bind values or credentials).
+  - **Frontend (14.1):** "Run command" button next to "Run query" (disabled when
+    the editor is empty or a command is in flight); a `ConfirmModal` gates the
+    action (config-toggleable "Require command confirmation", but the backend
+    **always** requires `confirm:true` — disabling the switch only skips the
+    dialog); result renders inline under the button as a success/error alert
+    (`query-editor-command-result`) with the readable message. Config editor
+    gains "Command timeout (s)" (`commandTimeoutSec`).
+  - **Oracle 21c adaptation (12.1):** the DoD's "start a job" is realized with
+    **`RUN_JOB('JOB', use_current_session => FALSE)`**, not `START_JOB` — the
+    21c `DBMS_SCHEDULER` spec has no `START_JOB` subprogram (removed; absent
+    from `ALL_PROCEDURES` even for SYS; calling it yields compile-time
+    `PLS-00302`, verified against the 21c docs). `RUN_JOB` async + `STOP_JOB`
+    reproduces the classic start/stop workflow. 21c also consolidated the
+    scheduler privileges: `ALTER ANY JOB` is gone from `system_privilege_map`,
+    replaced by `MANAGE SCHEDULER`.
+  - **DoD met** — `TestIntegration_Command` (Oracle 21c): unconfirmed → 400;
+    `DISABLE`→`DISABLED` then `ENABLE`→`SCHEDULED`; `RUN_JOB` async → poll
+    `RUNNING` → `STOP_JOB` → `SCHEDULED`; procedure side-effect (audit row);
+    function value (`42`); allowlist rejects `DROP TABLE` and a `DELETE` block
+    (table survives); a bad job name surfaces `ORA-` readably. e2e
+    `tests/command.spec.ts` (12.4 + 13.1): the default `SELECT 1 … FROM DUAL`
+    runs through the confirmation dialog and renders the value inline; DDL
+    edit surfaces the inline "must be a BEGIN" rejection. Full integration
+    suite, unit + lint, frontend build, plugin check 6/6 on 12.4 + 13.1, and
+    the full e2e suite (16 tests on 13.1) all green.
 
 ### Wave D — Maturity and Release
 
@@ -1077,8 +1130,7 @@ Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0)
 
 | 13 | **✅ Verified (2026-08-11, F9 end-to-end on Oracle 21c XE + Grafana 13.1.0 :3002):** (a) a **dashboard annotation** with a query target on the datasource is evaluated by Grafana's **frontend** annotation runner — the browser's `/api/ds/query` POST carries `scopedVars.__annotation` + `refId 'Anno'`, `applyTemplateVariables` sets `query.annotation=true`, and the backend returns the frame with `schema.meta.dataTopic === 'annotations'` (the marker that draws the events on the panel) in **table** shape (`time`/`title`/`text` fields mapped by name, ROWNUM ≤ 5 → 1–5 events). The server `GET /api/annotations` returns **only persisted** annotations, so query annotations must be asserted on the query response, not the annotations API. (b) the **metadata resource** (`metadata/tables`, `metadata/columns` from `ALL_TAB_COMMENTS` + `ALL_TAB_COLUMNS` ⋈ `ALL_COL_COMMENTS`) serves a bounded (≤ 200), TTL-cached table list and typed column list, and the **SQL editor completion** (plugin-ui `customProvider.tables`/`columns`) + **time-column dropdown** (DATE/TIMESTAMP columns of the parsed FROM table) are fed by it. (c) **go-ora rejects literal `?` placeholders** (ORA-00911) — metadata queries use the repo's numbered `:N` style. DoD "annotations marked on the panel; completion + time-column list work" met by `TestIntegration_Annotation` + `TestIntegration_Metadata` (6 subtests) and `tests/annotations.spec.ts`; full e2e suite 13/13 | 11 / 14.3 / F9 |
 | 14 | **✅ Verified (2026-08-11, F10 end-to-end on Oracle 21c XE + Grafana 12.4.0 :3001 + 13.1.0 :3002):** the health "Test" returns the **structured JSON detail** of §13 — `{"oracle":{"ok":…,"version":…},"prometheus":{"enabled":…,"ok":…}}` — and every failure path carries a **readable, credential-free** message: (a) **bad password** → `oracle.ok=false`, `error:"ORA-01017: invalid username or password"` (never the password — the DSN secret is redacted); (b) **unreachable host / closed port** → `error:"network error: …"` (both the API-level check and the e2e "Save & test should fail" assert the alert shows the network error and never `verif_password`); (c) **prometheus enabled** → `prometheus.enabled=true, ok=true, version:"3.5.0"` against the real Prometheus; (d) **not configured** → `prometheus.enabled=false, ok=true` so health is **green without a Prometheus config** (DoD) and a missing proxy never flips an Oracle failure into OK. Map now covers 27 ORA codes (§13 scenarios + common query errors incl. `00911`/`06550`). `TestHealthResult_Shapes` (4 §13 states) + `TestIntegration_Health*` (ok/bad-password/bad-host) green; plugin check 6/6; full e2e suite 13/13 | 13 / F10 |
-
-**Open decisions (with recommended defaults):**
+| 15 | **✅ Verified (2026-08-11, F15 end-to-end on Oracle 21c XE + Grafana 12.4.0 :3001 + 13.1.0 :3002, `TestIntegration_Command` + e2e `tests/command.spec.ts`):** the **command resource** executes only allowlisted one-shot operations, strictly outside the query pipeline. (a) **confirmation is a hard floor** — `confirm:false` → 400 "not confirmed" before any DB work; (b) the **allowlist** runs `BEGIN…END` blocks (each statement a `DBMS_SCHEDULER.<proc>` call — incl. key-value `SET_ATTRIBUTE` — or a plain procedure call) and `SELECT <expr> FROM DUAL`; it rejects `DROP TABLE`, a `DELETE` block, comments, control flow and unbalanced/unterminated statements with readable messages (the DDL/DML **never reach Oracle** — the audit table survives); (c) **scheduler lifecycle** on 21c: `DISABLE`→`DISABLED`, `ENABLE`→`SCHEDULED` (21c reports SCHEDULED, not ENABLED), **`RUN_JOB('JOB', use_current_session => FALSE)`** (async, ~100 ms return) → poll `RUNNING`, `STOP_JOB` → back to `SCHEDULED`; (d) a **procedure side-effect** (audit row) and a **function value** via `SELECT F15_ECHO(21) FROM DUAL` → `message:"42"` both work; (e) a bad job name surfaces the §13-mapped `ORA-` error readably. **Two Oracle 21c findings documented in §12.1/§12.3:** `DBMS_SCHEDULER.START_JOB` **no longer exists in 21c** (absent from `ALL_PROCEDURES` even for SYS; calling it → compile-time `PLS-00302: component 'START_JOB' must be declared`, not a privilege error) — `RUN_JOB` is the documented replacement; and `ALTER ANY JOB` is gone from 21c's `system_privilege_map`, consolidated into **`MANAGE SCHEDULER`**. The e2e drives the real button + confirmation dialog: the default `SELECT 1 … FROM DUAL` renders its value inline, and a monaco edit to DDL surfaces the inline "must be a BEGIN" rejection. Full integration suite + unit + lint + frontend build + plugin check 6/6 on both versions + full e2e suite (16 on 13.1) green | 12 / F15 |
 
 - `sessionTimeZone` default: `UTC` (recommended) — DATE/TIMESTAMP conversion follows it.
 - `maxRows` default: `100_000` (recommended); `maxSeries`: `1000`.

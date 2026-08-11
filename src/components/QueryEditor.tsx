@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Input, Select, Stack, Switch, Tab, TabsBar, TabContent } from '@grafana/ui';
+import { Alert, Button, ConfirmModal, Input, Select, Stack, Switch, Tab, TabsBar, TabContent } from '@grafana/ui';
 import { DataSourceInstanceSettings, QueryEditorProps, SelectableValue } from '@grafana/data';
 import { EditorField, EditorRow, SQLEditor } from '@grafana/plugin-ui';
 
@@ -158,6 +158,44 @@ export function QueryEditor(props: Props) {
     onChange({ ...query, step: e.currentTarget.value });
   };
 
+  // F15 "Run command" (report §12): a deliberate, one-shot action outside the
+  // query pipeline — never re-run by refresh, alerting or variables. The current
+  // SQL is posted as an anonymous PL/SQL command to the backend resource, which
+  // always requires confirm=true and only executes allowlisted commands (§12.3).
+  type CommandState =
+    | { kind: 'idle' }
+    | { kind: 'running'; message: string }
+    | { kind: 'ok'; message: string }
+    | { kind: 'error'; message: string };
+  const [commandState, setCommandState] = React.useState<CommandState>({ kind: 'idle' });
+  const [commandConfirmOpen, setCommandConfirmOpen] = React.useState(false);
+  // Confirmation dialog is config-toggleable (report §12.3); the backend still
+  // requires confirm=true, so disabling the dialog only skips the UI step.
+  const commandConfirmRequired = settings?.jsonData?.confirmCommand ?? true;
+
+  const runCommand = async () => {
+    const sql = query.sql || '';
+    setCommandConfirmOpen(false);
+    setCommandState({ kind: 'running', message: 'Executing…' });
+    try {
+      const res = await ds.runCommand(sql, true);
+      setCommandState({ kind: 'ok', message: res.message });
+    } catch (err) {
+      // postResource rejects with the backend error envelope; the readable
+      // message lives in err.data.error (resourceError body) — render it inline.
+      const e = err as { data?: { error?: string }; message?: string; statusText?: string };
+      setCommandState({ kind: 'error', message: e.data?.error ?? e.message ?? e.statusText ?? 'command failed' });
+    }
+  };
+
+  const onRunCommandClick = () => {
+    if (commandConfirmRequired) {
+      setCommandConfirmOpen(true);
+    } else {
+      void runCommand();
+    }
+  };
+
   // "Use query" from the metric browser commits the built selector and runs it
   // (report §14.1 sketch; the DoD path browser → PromQL → panel).
   const applyMetric = (expr: string) => {
@@ -255,11 +293,47 @@ export function QueryEditor(props: Props) {
               <SQLEditor query={query.sql || ''} language={oracleLanguage} onChange={onSQLChange} height={220} />
             </div>
 
-            <div>
+            <Stack direction="row" gap={1}>
               <Button size="sm" icon="play" variant="secondary" onClick={onRunQuery}>
                 Run query
               </Button>
-            </div>
+              <Button
+                size="sm"
+                icon="bolt"
+                variant="secondary"
+                onClick={onRunCommandClick}
+                disabled={!query.sql?.trim() || commandState.kind === 'running'}
+              >
+                Run command
+              </Button>
+            </Stack>
+
+            {commandState.kind !== 'idle' && (
+              <div data-testid="query-editor-command-result">
+                <Alert
+                  severity={commandState.kind === 'error' ? 'error' : commandState.kind === 'ok' ? 'success' : 'info'}
+                  title={
+                    commandState.kind === 'error'
+                      ? 'Command failed'
+                      : commandState.kind === 'ok'
+                        ? 'Command completed'
+                        : 'Running command'
+                  }
+                >
+                  {commandState.message}
+                </Alert>
+              </div>
+            )}
+
+            <ConfirmModal
+              isOpen={commandConfirmOpen}
+              title="Run command against Oracle?"
+              body={`This executes an anonymous PL/SQL command against the datasource. It is a one-shot action with side effects and is never re-run by panel refresh, alerting or variables.\n\n${query.sql || ''}`}
+              confirmText="Confirm"
+              dismissText="Cancel"
+              onConfirm={() => void runCommand()}
+              onDismiss={() => setCommandConfirmOpen(false)}
+            />
           </>
         )}
       </TabContent>

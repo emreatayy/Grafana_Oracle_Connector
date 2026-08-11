@@ -3,7 +3,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Grafana](https://img.shields.io/badge/Grafana-%E2%89%A512.3-F46800.svg)](https://grafana.com)
 [![Oracle](https://img.shields.io/badge/Oracle-%E2%89%A512c-red.svg)](https://www.oracle.com/database/)
-[![Status](https://img.shields.io/badge/status-F10%20done-brightgreen.svg)](#status)
+[![Status](https://img.shields.io/badge/status-F15%20done-brightgreen.svg)](#status)
 [![CI](https://github.com/emreatayy/Grafana_Oracle_Connector/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
 A **Grafana data source plugin for Oracle Database** with an optional
@@ -46,7 +46,7 @@ procedures) — all driven from the query editor.
 |---|---|
 | Design | ✅ Complete — `docs/project-report.md` (v2) |
 | Empirical verification | ✅ **11 of 11** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1, Prometheus 3.5.0) — see `verification/` |
-| Implementation | ✅ **F10 done** (connection core + typed mapping + macro & variable engine + SQL query editor + basic alerting + Prometheus proxy backend + PromQL editor & metric browser + query variables + annotations + editor autocomplete + health JSON + ORA error resolution) — next: F15 (command execution) |
+| Implementation | ✅ **F15 done** (connection core + typed mapping + macro & variable engine + SQL query editor + basic alerting + Prometheus proxy backend + PromQL editor & metric browser + query variables + annotations + editor autocomplete + health JSON + ORA error resolution + **command execution / operations UI**) — next: F11 (security, log hygiene, self-metrics) |
 
 The report's riskiest assumptions were validated empirically before any code
 was written, which produced two design corrections early:
@@ -314,6 +314,26 @@ Pinned dependencies (pinned at F0, 2026-08-07):
 > (config-editor e2e asserts the alert text), `TestHealthResult_Shapes` +
 > `TestIntegration_Health*` on Oracle 21c; plugin check 6/6, full e2e suite
 > 13/13.
+>
+> **F15 (2026-08-11):** **Command execution (operations UI)** — a **"Run
+> command"** button in the query editor posts an anonymous PL/SQL command to a
+> new backend **`command` resource** (report §12, ADR-13), strictly outside the
+> query pipeline — never re-run by panel refresh, alerting or variables. The
+> backend **always requires `confirm:true`**, then enforces the **allowlist**:
+> `BEGIN…END;` blocks whose statements are `DBMS_SCHEDULER.<proc>(…)` or plain
+> procedure calls, plus `SELECT <expr> FROM DUAL` (function value rendered
+> inline); comments, DDL/DML, control flow, and the escape-hatch packages
+> `DBMS_SQL` / `DBMS_SYS_SQL` / `DBMS_UTILITY` are rejected. A confirmation
+> dialog gates the action (config-toggleable — disabling it only skips the
+> dialog); results and errors render inline; execution is bound by
+> `commandTimeoutSec` (default 10 s) and every command is audit-logged.
+> **Oracle 21c note:** `DBMS_SCHEDULER.START_JOB` was **removed in 21c**
+> (compile-time `PLS-00302`); `RUN_JOB('JOB', use_current_session => FALSE)` is
+> the replacement for starting a job. Verified: `TestIntegration_Command` on
+> Oracle 21c (confirm gate, DISABLE/ENABLE/RUN_JOB/STOP_JOB lifecycle, procedure
+> side-effect, function value "42", DDL/DML rejected), e2e
+> `tests/command.spec.ts` on 12.4 + 13.1, full e2e suite 16/16 on 13.1, plugin
+> check 6/6 on 12.4 + 13.1.
 
 ---
 
@@ -406,14 +426,14 @@ Verify the built plugin against a running matrix Grafana (plugin load, health
 
 ## Roadmap
 
-16 implementation phases in 4 waves (~52–54 person-days). **F10 is done**
+16 implementation phases in 4 waves (~52–54 person-days). **F15 is done**
 (scaffold + Oracle connection core + typed type mapping & frame generation +
 backend macro & variable engine + SQL query editor + basic alerting + the
 Prometheus proxy backend + the PromQL editor & metric browser + Grafana query
 variables + **annotations** + **editor autocomplete** + **health JSON detail**
-+ **ORA error resolution**: pooled connection, session timezone pinning,
-ctx-cancelled queries, read-only guard, ORA error parsing, typed
-NUMBER/DATE/CLOB/NULL fields, wide/long time series, `largeNumberMode`,
++ **ORA error resolution** + **command execution**: pooled connection, session
+timezone pinning, ctx-cancelled queries, read-only guard, ORA error parsing,
+typed NUMBER/DATE/CLOB/NULL fields, wide/long time series, `largeNumberMode`,
 `$__timeFilter`/`$__unixEpochGroup`/`${var:csv}` interpolation with fail-closed
 guards, mode-tab query editor with Oracle + PromQL monarch languages, float64
 time-series value columns + scalar-`COUNT(*)` "rows > 0" alert rules, a
@@ -423,11 +443,14 @@ browser backed by a proxied `CallResource` handler, query variables — SQL
 single-column + Prometheus `label_values` with multi-value `IN` — dashboard
 annotations marked with `DataTopic.Annotations` on the query frame, a TTL-cached
 metadata resource (`ALL_TAB_COMMENTS` + `ALL_TAB_COLUMNS`) feeding SQL-editor
-table/column completion and the time-column dropdown, and a structured health
+table/column completion and the time-column dropdown, a structured health
 `{oracle,prometheus}.ok` JSON with a 27-code ORA error map (bad password / URL /
-connection + query errors, all credential-redacted) — all verified on Grafana
+connection + query errors, all credential-redacted), and a "Run command" button
+that executes allowlisted one-shot scheduler/procedure commands through the
+backend `command` resource (confirm-gated, audit-logged, `commandTimeoutSec`
+bound, `SELECT … FROM DUAL` values rendered inline) — all verified on Grafana
 12.4 + 13.1, the alert rules and the proxy against a real Prometheus 3.5.0).
-The critical path going forward is **F15** (command execution — operations UI).
+The critical path going forward is **F11** (security, log hygiene, self-metrics).
 
 | Wave | Phases | Scope | Effort |
 |---|---|---|---|
@@ -436,10 +459,10 @@ The critical path going forward is **F15** (command execution — operations UI)
 | **C — Data & UX** | F8–F10, F15 | Variables, annotations + autocomplete, health/error UX, command execution UI | ~12 pg |
 | **D — Maturity & Release** | F11–F14 | Security/self-metrics, performance/limits, docs + packaging + e2e, ops/optional | ~12–14 pg |
 
-**F15 (command execution UI)** is part of Wave C — it depends on F1 + F4 and is
-the feature that makes the plugin operationally useful (scheduler job control,
-procedure calls). Full phase-by-phase detail with acceptance criteria: report
-§18.
+**F15 (command execution UI)** was the last Wave C phase — the feature that
+makes the plugin operationally useful (scheduler job control, procedure calls);
+it is **done** (see Status). Full phase-by-phase detail with acceptance
+criteria: report §18.
 
 ---
 

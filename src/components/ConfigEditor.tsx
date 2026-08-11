@@ -257,6 +257,18 @@ export function ConfigEditor(props: Props) {
             width={50}
           />
         </InlineField>
+        <InlineField
+          label="Require command confirmation"
+          labelWidth={24}
+          interactive
+          tooltip="Show a confirmation dialog before a 'Run command' action (report §12.3). The backend ALWAYS requires confirm=true regardless — this only skips the dialog in the editor."
+        >
+          <Switch
+            id="config-editor-command-confirm"
+            value={jsonData.confirmCommand ?? true}
+            onChange={(e) => update('confirmCommand', e.currentTarget.checked)}
+          />
+        </InlineField>
       </FieldSet>
 
       <FieldSet label="Limits">
@@ -279,6 +291,20 @@ export function ConfigEditor(props: Props) {
             type="number"
             value={jsonData.queryTimeoutSec ?? 30}
             onChange={(e) => update('queryTimeoutSec', num(e.currentTarget.value))}
+            width={50}
+          />
+        </InlineField>
+        <InlineField
+          label="Command timeout (s)"
+          labelWidth={24}
+          interactive
+          tooltip="Bounds a single 'Run command' action (report §12.3). Queries are unaffected — commands never produce a frame."
+        >
+          <Input
+            id="config-editor-command-timeout"
+            type="number"
+            value={jsonData.commandTimeoutSec ?? 10}
+            onChange={(e) => update('commandTimeoutSec', num(e.currentTarget.value))}
             width={50}
           />
         </InlineField>

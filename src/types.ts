@@ -58,6 +58,10 @@ export interface MyDataSourceOptions extends DataSourceJsonData {
   sessionTimeZone?: string;
   defaultMode?: QueryMode;
   defaultFormat?: string;
+  // F15: show a confirmation dialog before a "Run command" action (report
+  // §12.3). Default true. The backend ALWAYS requires confirm=true regardless —
+  // disabling this only skips the dialog; the frontend still sends confirm=true.
+  confirmCommand?: boolean;
   // ADR-8: big NUMBER (scale=0, precision>15) policy. Empty = per-format
   // default (string in table, float in time_series).
   largeNumberMode?: LargeNumberMode;

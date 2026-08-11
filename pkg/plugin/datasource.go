@@ -200,12 +200,20 @@ func (d *Datasource) promHealth(ctx context.Context) (string, error) {
 // secureJsonData and a browser request would be CORS-blocked, so every browse
 // call is proxied through the plugin with the same auth/TLS as queries. Paths
 // are namespaced under "prometheus/" and individually whitelisted; unknown
-// paths (e.g. the F15 "command" resource) get a clean 404.
+// paths get a clean 404. The "command" path (F15, report §12) and the
+// metadata/ namespace (F9) are routed before the Prometheus prefix.
 func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
 	// F9: schema metadata for editor completion + the time-column dropdown
 	// (report §14.3). Read-only, credential-free, silent-empty on any error.
 	if strings.HasPrefix(req.Path, "metadata/") {
 		return d.metadataResource(ctx, req, sender)
+	}
+
+	// F15: one-shot operational commands (report §12, ADR-13) — a deliberate
+	// allowlisted exception to the read-only query path, never re-run by
+	// refresh/alerting/variables. Always require confirm=true (see command.go).
+	if req.Path == "command" {
+		return d.commandResource(ctx, req, sender)
 	}
 
 	const prefix = "prometheus/"
