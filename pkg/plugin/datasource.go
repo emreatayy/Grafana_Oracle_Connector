@@ -74,6 +74,14 @@ type Datasource struct {
 	// so concurrent queries cannot race the session setup.
 	mu    sync.Mutex
 	ready bool
+
+	// metaMu guards the F9 schema-metadata caches (report §14.3). A separate
+	// mutex so metadata resource calls never block query/health on mu, which
+	// ensureReady holds across a connection attempt.
+	metaMu       sync.Mutex
+	metaTablesAt time.Time
+	metaTables   []string
+	metaCols     map[string]metadataColumnCache
 }
 
 // Dispose closes the connection pool. The SDK calls it whenever the datasource
@@ -196,6 +204,12 @@ func (d *Datasource) promHealth(ctx context.Context) (string, error) {
 // are namespaced under "prometheus/" and individually whitelisted; unknown
 // paths (e.g. the F15 "command" resource) get a clean 404.
 func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	// F9: schema metadata for editor completion + the time-column dropdown
+	// (report §14.3). Read-only, credential-free, silent-empty on any error.
+	if strings.HasPrefix(req.Path, "metadata/") {
+		return d.metadataResource(ctx, req, sender)
+	}
+
 	const prefix = "prometheus/"
 	if !strings.HasPrefix(req.Path, prefix) {
 		return sender.Send(resourceError(http.StatusNotFound, "unknown resource"))

@@ -909,6 +909,51 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 **F9 — Annotations + autocomplete** · 4 pg
 - Annotation handler + frame (11); metadata service (14.3, cache + silent disable without permissions); feeding the time-column dropdown.
 - **DoD:** Annotations are marked on the panel; editor completion and time-column list work.
+- **Status (2026-08-11):** ✅ **done.**
+  - **Annotation handler (11):** `applyTemplateVariables` marks the query when the
+    annotation runner injects `scopedVars.__annotation` (Grafana 13
+    `executeAnnotationQuery` also adds `refId 'Anno'` and
+    `app: CoreApp.Dashboard`); the backend forces the **table** shape (the
+    annotation reader maps fields by name — a time-series conversion would
+    reshape/corrupt them) and sets `frame.Meta.DataTopic = DataTopicAnnotations`
+    (the only `DataTopic` constant the SDK exposes; the control query leaves
+    `""`). **Verified on Oracle 21c:** `TestIntegration_Annotation` — control
+    query `DataTopic == ""`, annotated query `DataTopic == Annotations` with all
+    4 rows (NULL-time rows kept in table shape) and fields `[time title text]`.
+    `plugin.json` already carried `"annotations": true` (no restart needed).
+  - **Metadata service (14.3):** `metadata/tables` + `metadata/columns` under
+    `CallResource`, sourced from `ALL_TAB_COMMENTS` (restricted to the accessible
+    set — `ALL_TAB_PRIVS` deliberately not joined, as it misses role-granted
+    access) and `ALL_TAB_COLUMNS` ⋈ `ALL_COL_COMMENTS`; 5-min TTL cache (per
+    owner.table for columns, full list for tables), 200-table bound, **silent
+    degrade to 200-with-empty-arrays** on any failure (missing permission, DB
+    down) so the editor falls back to Auto + free text. Columns accepts
+    schema-qualified `OWNER.TABLE`; table/prefix params are bound, length-guarded
+    (400 past 128 chars). **Placeholder lesson learned:** go-ora's parser rejects
+    a literal `?` (ORA-00911) — the queries use the repo's numbered `:N` style
+    (same as `seedF2Rows`). **Verified on Oracle 21c:** `TestIntegration_Metadata`
+    (6 subtests: prefix narrowing finds `GOX_F2`, unprefixed list bounded ≤ 200,
+    typed columns `AT→DATE`/`LABEL→VARCHAR2`, schema-qualified name, unknown
+    table → empty-not-error, resource JSON shape).
+  - **Editor completion + time-column (14.1/14.3):** the SQL editor language is
+    now built **per datasource** (`buildOracleLanguage(ds)`) and registers the
+    plugin-ui **`customProvider.tables` / `customProvider.columns`** extension
+    points — the lightweight resolvers that populate the SQLEditor's
+    Tables/Columns completion from the metadata resource (spread over
+    `getStandardSQLCompletionProvider` so keyword/function completion is kept).
+    The **time-column dropdown** is fed by the metadata: the first FROM table is
+    parsed (regex heuristic, quotes stripped) and its DATE/TIMESTAMP-family
+    columns are appended to Auto + free text after a 250 ms debounce; on no
+    table/metadata it silently keeps Auto + free text.
+  - **DoD met** — the annotation query is marked on the panel (e2e
+    `tests/annotations.spec.ts` captures the browser's `/api/ds/query` POST with
+    `refId 'Anno'` and asserts `schema.meta.dataTopic === 'annotations'` + table
+    `time`/`text` fields — the server `GET /api/annotations` only returns
+    **persisted** annotations, so dashboard query annotations must be asserted on
+    the query response), and editor completion + time-column list work against
+    the live metadata resource. Full e2e suite **13/13 green** on Grafana
+    13.1.0 (:3002); full Go unit suite + lint clean; frontend typecheck/lint/
+    build clean.
 
 **F10 — Health enrichment + error resolution** · 2 pg
 - The Section 13 table; ORA-#### → readable English message map; ConfigEditor "Test" screen JSON.
@@ -984,7 +1029,7 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 
 ## 21. Assumptions to Verify and Open Decisions
 
-Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0), Grafana 12.4/13.1, and the F0-built plugin. **12 of 12 resolved.**
+Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0), Grafana 12.4/13.1, and the F0-built plugin. **13 of 13 resolved.**
 
 | # | Check | Affects |
 |---|---|---|
@@ -1001,6 +1046,8 @@ Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0)
 
 | 11 | **✅ Verified (2026-08-10, F7 end-to-end on Grafana 12.4.0 :3001 + 13.1.0 :3002 against Prometheus 3.5.0 via `verification/prom_check.py`, 11/11):** (a) the metric-browser resources are proxy-able: `label/__name__/values` returns the metric list (contains `up`), `labels` returns label names (contains `job`), `series?match[]=up` returns the series set; (b) a metric name picked from the browser feeds an instant query → correct frame (resource → PromQL → panel); (c) an **unknown** resource path → clean 404 (never a proxy pass-through); (d) credentials never logged holds for resource errors too. Plus the **F7 DoD "panel + alert"**: `verification/alert_check.py` (now **8/8**) runs a Prometheus-mode alert rule `up > 0` on the provisioned prom-only datasource (`provisioning/datasources/datasources-prom.yml`) — it evaluates through the proxy and fires (`state=firing, health=ok`). **Design note:** a Prometheus-only datasource still requires the Oracle connection jsonData — the plugin is "Oracle with an optional Prometheus proxy" and builds its DSN at instance construction (§5) — but it is only ever queried in Prometheus mode | 9 / F7 |
 | 12 | **✅ Verified (2026-08-10, F8 end-to-end on Grafana 12.4.0 :3001 + 13.1.0 :3002 via `verification/variable_check.py`, 5/5):** (a) a **SQL single-column** query (`SELECT DISTINCT object_type … WHERE object_type IN ('TABLE','VIEW')`) feeds a Grafana query variable → dropdown `['TABLE','VIEW']`; (b) **`label_values(job)`** (single-arg) → `GET /api/v1/label/job/values` → `['prometheus']`; (c) **`label_values(up, job)`** (two-arg) → `series?match[]=up` then distinct+sorted `job` → `['prometheus']` — both intercepted by the plugin before the PromQL parser, served as a one-column frame; (d) **multi-value** `WHERE object_type IN (${v:csv})` with `scopedVars v=['TABLE','VIEW']` → both rows (F3 interpolation); (e) **empty** selection (`v=[]`) → `IN (NULL)` → no rows. DoD "dropdown variable + multi-select dashboard e2e" met by `tests/variables.spec.ts` (3/3: SQL dropdown, `label_values(job)` dropdown in the variable editor, and an API-created multi-select dashboard whose panel renders only the selected values) | 8.5 / F8 |
+
+| 13 | **✅ Verified (2026-08-11, F9 end-to-end on Oracle 21c XE + Grafana 13.1.0 :3002):** (a) a **dashboard annotation** with a query target on the datasource is evaluated by Grafana's **frontend** annotation runner — the browser's `/api/ds/query` POST carries `scopedVars.__annotation` + `refId 'Anno'`, `applyTemplateVariables` sets `query.annotation=true`, and the backend returns the frame with `schema.meta.dataTopic === 'annotations'` (the marker that draws the events on the panel) in **table** shape (`time`/`title`/`text` fields mapped by name, ROWNUM ≤ 5 → 1–5 events). The server `GET /api/annotations` returns **only persisted** annotations, so query annotations must be asserted on the query response, not the annotations API. (b) the **metadata resource** (`metadata/tables`, `metadata/columns` from `ALL_TAB_COMMENTS` + `ALL_TAB_COLUMNS` ⋈ `ALL_COL_COMMENTS`) serves a bounded (≤ 200), TTL-cached table list and typed column list, and the **SQL editor completion** (plugin-ui `customProvider.tables`/`columns`) + **time-column dropdown** (DATE/TIMESTAMP columns of the parsed FROM table) are fed by it. (c) **go-ora rejects literal `?` placeholders** (ORA-00911) — metadata queries use the repo's numbered `:N` style. DoD "annotations marked on the panel; completion + time-column list work" met by `TestIntegration_Annotation` + `TestIntegration_Metadata` (6 subtests) and `tests/annotations.spec.ts`; full e2e suite 13/13 | 11 / 14.3 / F9 |
 
 **Open decisions (with recommended defaults):**
 

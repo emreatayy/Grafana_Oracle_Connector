@@ -4,7 +4,7 @@ import { DataSourceInstanceSettings, QueryEditorProps, SelectableValue } from '@
 import { EditorField, EditorRow, SQLEditor } from '@grafana/plugin-ui';
 
 import { DataSource } from '../datasource';
-import { oracleSQLLanguage } from '../language/oracle';
+import { buildOracleLanguage } from '../language/oracle';
 import { promQLSQLLanguage } from '../language/promql';
 import { MetricBrowser } from './MetricBrowser';
 import { MyDataSourceOptions, MyQuery, QueryFormat, QueryMode } from '../types';
@@ -17,11 +17,30 @@ const FORMAT_OPTIONS: Array<SelectableValue<QueryFormat>> = [
   { label: 'Time series', value: 'time_series' },
 ];
 
-// Auto + free text until F9 wires the metadata-driven column list (report
-// §14.1: "wired to F9 metadata, static first").
+// Auto is always offered; F9 appends the DATE/TIMESTAMP columns of the FROM
+// table from metadata (report §14.3). allowCustomValue keeps free text working
+// for epoch/NUMBER time columns the metadata cannot classify.
 const TIME_COLUMN_OPTIONS: Array<SelectableValue<string>> = [
   { label: 'Auto', value: '', description: 'Detect the time column from the result' },
 ];
+
+// The first FROM clause's table (schema-qualified names kept, quotes stripped)
+// — enough to pick the time-column candidate list (report §14.3). This is a
+// heuristic, not a parser: a subquery's FROM may win, but the dropdown only
+// *suggests* candidates and Auto/free-text always remain.
+function tableFromSQL(sql: string): string | undefined {
+  const m = /\bFROM\s+([A-Za-z0-9_$."]+)/i.exec(sql);
+  if (!m) {
+    return undefined;
+  }
+  return m[1].replace(/"/g, '');
+}
+
+// DATE/TIMESTAMP-family columns are the only safe Grafana time columns.
+function isDateLike(dataType: string): boolean {
+  const t = dataType.toUpperCase();
+  return t.startsWith('DATE') || t.startsWith('TIMESTAMP');
+}
 
 export function QueryEditor(props: Props) {
   const { query, onChange, onRunQuery } = props;
@@ -34,6 +53,50 @@ export function QueryEditor(props: Props) {
   const ds = props.datasource as DataSource & { instanceSettings?: DataSourceInstanceSettings<MyDataSourceOptions> };
   const settings = props.datasource.datasourceInstanceSettings ?? ds.instanceSettings;
   const mode: QueryMode = query.mode ?? settings?.jsonData?.defaultMode ?? 'sql';
+
+  // F9: the Oracle SQLEditor language is built per-datasource so its completion
+  // resolvers can call the metadata resource (report §14.3). `ds` is stable for
+  // the datasource's lifetime, so the memo survives re-renders; the SQLEditor
+  // only keys its monaco language id on `language.id` ('oracle-sql').
+  const oracleLanguage = React.useMemo(() => buildOracleLanguage(ds), [ds]);
+
+  // Time-column candidates from metadata: Auto + the DATE/TIMESTAMP columns of
+  // the FROM table. Silent fallback to Auto + free text when no table is parsed
+  // or metadata is unavailable (permission-less account, DB down).
+  const [timeColumnOptions, setTimeColumnOptions] =
+    React.useState<Array<SelectableValue<string>>>(TIME_COLUMN_OPTIONS);
+  React.useEffect(() => {
+    let cancelled = false;
+    const table = tableFromSQL(query.sql || '');
+    // Debounce so typing a table name does not fire a resource call per key;
+    // the backend caches metadata for 5 minutes either way. Both state writes
+    // live inside the async callback (never synchronously in the effect body),
+    // so the react-hooks/set-state-in-effect rule is satisfied.
+    const timer = window.setTimeout(async () => {
+      if (cancelled) {
+        return;
+      }
+      if (!table) {
+        setTimeColumnOptions(TIME_COLUMN_OPTIONS);
+        return;
+      }
+      let columns: Array<{ name: string; dataType: string }> = [];
+      try {
+        columns = await ds.getMetadataColumns(table);
+      } catch {
+        columns = [];
+      }
+      if (cancelled) {
+        return;
+      }
+      const dateColumns = columns.filter((c) => isDateLike(c.dataType)).map((c) => ({ label: c.name, value: c.name }));
+      setTimeColumnOptions([...TIME_COLUMN_OPTIONS, ...dateColumns]);
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [query.sql, ds]);
 
   // Live mode the change handlers read at CALL time (refs are not bound by the
   // render closure). A monaco editor fires a spurious `onChange('')` from its
@@ -178,7 +241,7 @@ export function QueryEditor(props: Props) {
                 <EditorField label="Time column" htmlFor="query-editor-time-column">
                   <Select<string>
                     id="query-editor-time-column"
-                    options={TIME_COLUMN_OPTIONS}
+                    options={timeColumnOptions}
                     value={query.timeColumn ?? ''}
                     onChange={onTimeColumnChange}
                     allowCustomValue
@@ -189,7 +252,7 @@ export function QueryEditor(props: Props) {
             </EditorRow>
 
             <div data-testid="query-editor-sql">
-              <SQLEditor query={query.sql || ''} language={oracleSQLLanguage} onChange={onSQLChange} height={220} />
+              <SQLEditor query={query.sql || ''} language={oracleLanguage} onChange={onSQLChange} height={220} />
             </div>
 
             <div>

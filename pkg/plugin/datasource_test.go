@@ -490,6 +490,26 @@ func TestQuery_InvalidJSON(t *testing.T) {
 	}
 }
 
+// TestQueryModel_Annotation parses the F9 annotation marker (report §11): a
+// dashboard annotation target carries `"annotation": true` and must be
+// distinguished from a regular panel query.
+func TestQueryModel_Annotation(t *testing.T) {
+	var qm queryModel
+	if err := json.Unmarshal(json.RawMessage(`{"sql":"SELECT ts FROM events","annotation":true}`), &qm); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !qm.Annotation {
+		t.Errorf("annotation = false, want true")
+	}
+	var plain queryModel
+	if err := json.Unmarshal(json.RawMessage(`{"sql":"SELECT 1 FROM DUAL"}`), &plain); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if plain.Annotation {
+		t.Errorf("annotation = true for a plain query, want false")
+	}
+}
+
 // TestQueryModel_Parse verifies the query model fields (report §4.3) and that
 // the optional ones stay empty when absent.
 func TestQueryModel_Parse(t *testing.T) {
@@ -703,6 +723,68 @@ func TestCallResource_RejectsBadPaths(t *testing.T) {
 		if resp.Status != c.want {
 			t.Errorf("path %q: status = %d, want %d", c.path, resp.Status, c.want)
 		}
+	}
+}
+
+// TestCallResource_MetadataTables_SilentEmpty: the F9 metadata endpoint degrades
+// silently — an unconnected database (or a permission-less account) yields 200
+// with an empty table list, never an error the editor would surface (report §14.3).
+func TestCallResource_MetadataTables_SilentEmpty(t *testing.T) {
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+
+	for _, u := range []string{"", "metadata/tables", "metadata/tables?prefix=DU"} {
+		resp := callResource(ds, &backend.CallResourceRequest{Path: "metadata/tables", URL: u})
+		if resp.Status != http.StatusOK {
+			t.Errorf("url %q: status = %d, want 200 (silent empty)", u, resp.Status)
+		}
+		if !strings.Contains(string(resp.Body), `"tables":[]`) {
+			t.Errorf("url %q: body = %s, want empty tables", u, resp.Body)
+		}
+	}
+}
+
+// TestCallResource_MetadataColumns_SilentEmpty: same silent degradation for a
+// column lookup when the database is unreachable.
+func TestCallResource_MetadataColumns_SilentEmpty(t *testing.T) {
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+
+	resp := callResource(ds, &backend.CallResourceRequest{
+		Path: "metadata/columns",
+		URL:  "http://irrelevant/metadata/columns?table=GOX_F2",
+	})
+	if resp.Status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", resp.Status, resp.Body)
+	}
+	if !strings.Contains(string(resp.Body), `"columns":[]`) {
+		t.Errorf("body = %s, want empty columns", resp.Body)
+	}
+}
+
+// TestCallResource_MetadataColumns_RequiresTable: a column lookup without a
+// table parameter is a client error, not a silent empty.
+func TestCallResource_MetadataColumns_RequiresTable(t *testing.T) {
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+
+	for _, u := range []string{"", "http://irrelevant/metadata/columns?table=%20%20"} {
+		resp := callResource(ds, &backend.CallResourceRequest{Path: "metadata/columns", URL: u})
+		if resp.Status != http.StatusBadRequest {
+			t.Errorf("url %q: status = %d, want 400", u, resp.Status)
+		}
+	}
+}
+
+// TestCallResource_Metadata_UnknownPath: paths outside the metadata/ namespace
+// still get a clean 404.
+func TestCallResource_Metadata_UnknownPath(t *testing.T) {
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+
+	resp := callResource(ds, &backend.CallResourceRequest{Path: "metadata/foo"})
+	if resp.Status != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.Status)
 	}
 }
 

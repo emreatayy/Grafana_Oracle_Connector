@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -190,6 +191,159 @@ func TestIntegration_ReadOnlyGuard(t *testing.T) {
 	if !strings.Contains(resp.Error.Error(), "read-only guard") {
 		t.Errorf("error = %q, want read-only guard message", resp.Error)
 	}
+}
+
+// TestIntegration_Annotation is the F9 DoD backend half: an annotation query
+// (report §11) must come back as a TABLE frame — no time-series conversion — with
+// DataTopic.Annotations set, so Grafana's annotation reader can map the
+// time/title/text fields by name. The control (same SQL, no marker) proves the
+// forcing actually matters.
+func TestIntegration_Annotation(t *testing.T) {
+	ds := newIntegrationDatasource(t)
+	t.Cleanup(ds.Dispose)
+	ctx := context.Background()
+	ensureF2Table(t, ds, ctx)
+	seedF2Rows(t, ds, ctx)
+
+	annotation := func(extra string) *data.Frame {
+		t.Helper()
+		resp := ds.query(ctx, backend.DataQuery{RefID: "A",
+			JSON: json.RawMessage(`{"sql":"SELECT at AS \"time\", label AS \"title\", label AS \"text\" FROM gox_f2 ORDER BY id"` + extra + `}`)})
+		if resp.Error != nil {
+			t.Fatalf("query error: %v", resp.Error)
+		}
+		if len(resp.Frames) != 1 {
+			t.Fatalf("frames = %d, want 1", len(resp.Frames))
+		}
+		return resp.Frames[0]
+	}
+
+	// Control: without the marker the same data is a plain data frame — no
+	// annotation topic.
+	plain := annotation("")
+	if plain.Meta == nil || plain.Meta.DataTopic != "" {
+		t.Fatalf("control meta = %+v, want no DataTopic", plain.Meta)
+	}
+
+	// Annotation marker: table shape (all 4 rows kept — time-series would drop
+	// the two NULL-time rows) + DataTopic.Annotations.
+	frame := annotation(`,"annotation":true`)
+	if frame.Meta == nil || frame.Meta.DataTopic != data.DataTopicAnnotations {
+		t.Fatalf("meta = %+v, want DataTopic.Annotations", frame.Meta)
+	}
+	if frame.Rows() != 4 {
+		t.Errorf("rows = %d, want 4 (table keeps NULL-time rows; time-series would drop them)", frame.Rows())
+	}
+	names := make([]string, len(frame.Fields))
+	for i, f := range frame.Fields {
+		names[i] = f.Name
+	}
+	want := []string{"time", "title", "text"}
+	for i, w := range want {
+		if names[i] != w {
+			t.Fatalf("fields = %v, want [%v] in order", names, want)
+		}
+	}
+}
+
+// TestIntegration_Metadata is the F9 DoD metadata half (report §14.3): the
+// resource lists accessible tables (bounded), narrows by prefix, and resolves a
+// table's columns with types — including schema-qualified names and an unknown
+// table (empty, not an error). The full list is NOT asserted to contain the
+// fixture table because a privileged account's bounded-200 list is
+// alphabet-biased; the prefix query is the reliable accessor.
+func TestIntegration_Metadata(t *testing.T) {
+	ds := newIntegrationDatasource(t)
+	t.Cleanup(ds.Dispose)
+	ctx := context.Background()
+	ensureF2Table(t, ds, ctx)
+	seedF2Rows(t, ds, ctx)
+
+	t.Run("prefix finds the fixture table", func(t *testing.T) {
+		tables, err := ds.metadataTables(ctx, "GOX_F")
+		if err != nil {
+			t.Fatalf("metadataTables: %v", err)
+		}
+		if !containsString(tables, "GOX_F2") {
+			t.Errorf("tables = %v, want it to contain GOX_F2", tables)
+		}
+	})
+
+	t.Run("unprefixed list is bounded", func(t *testing.T) {
+		tables, err := ds.metadataTables(ctx, "")
+		if err != nil {
+			t.Fatalf("metadataTables: %v", err)
+		}
+		if len(tables) == 0 {
+			t.Errorf("tables empty for a privileged account")
+		}
+		if len(tables) > metadataMaxTables {
+			t.Errorf("tables = %d, want bounded to %d", len(tables), metadataMaxTables)
+		}
+	})
+
+	t.Run("columns with types", func(t *testing.T) {
+		cols, err := ds.metadataColumns(ctx, "gox_f2")
+		if err != nil {
+			t.Fatalf("metadataColumns: %v", err)
+		}
+		if len(cols) != 6 {
+			t.Fatalf("columns = %d, want 6: %v", len(cols), cols)
+		}
+		byName := map[string]string{}
+		for _, c := range cols {
+			byName[c.Name] = c.DataType
+		}
+		if byName["AT"] != "DATE" {
+			t.Errorf("AT type = %q, want DATE", byName["AT"])
+		}
+		if byName["LABEL"] == "" || !strings.HasPrefix(byName["LABEL"], "VARCHAR2") {
+			t.Errorf("LABEL type = %q, want VARCHAR2", byName["LABEL"])
+		}
+	})
+
+	t.Run("schema-qualified name", func(t *testing.T) {
+		cols, err := ds.metadataColumns(ctx, "SYSTEM.gox_f2")
+		if err != nil {
+			t.Fatalf("metadataColumns: %v", err)
+		}
+		if len(cols) != 6 {
+			t.Errorf("columns = %d, want 6 for SYSTEM.gox_f2", len(cols))
+		}
+	})
+
+	t.Run("unknown table is empty, not an error", func(t *testing.T) {
+		cols, err := ds.metadataColumns(ctx, "NO_SUCH_TABLE_XYZ")
+		if err != nil {
+			t.Fatalf("metadataColumns: %v", err)
+		}
+		if len(cols) != 0 {
+			t.Errorf("columns = %d, want 0", len(cols))
+		}
+	})
+
+	t.Run("resource JSON shape", func(t *testing.T) {
+		resp := callResource(ds, &backend.CallResourceRequest{
+			Path: "metadata/columns",
+			URL:  "http://irrelevant/metadata/columns?table=gox_f2",
+		})
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, resp.Body)
+		}
+		if !strings.Contains(string(resp.Body), `"dataType":"DATE"`) {
+			t.Errorf("body = %s, want a DATE column in the response", resp.Body)
+		}
+	})
+}
+
+// containsString reports whether want is in xs.
+func containsString(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }
 
 // mustJSON quotes a string as a JSON string literal.

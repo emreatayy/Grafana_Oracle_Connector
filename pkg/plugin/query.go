@@ -24,7 +24,8 @@ import (
 // applyTemplateVariables (empty for alert queries — §8.3). F4 adds mode, the
 // per-query Oracle/Prometheus editor selection. F6 adds the Prometheus fields:
 // promql, instant (query vs query_range), legendFormat and an optional step
-// override.
+// override. F9 adds annotation, set by the frontend when the query is a
+// dashboard annotation target (report §11).
 type queryModel struct {
 	SQL             string         `json:"sql"`
 	Format          string         `json:"format"`
@@ -36,6 +37,7 @@ type queryModel struct {
 	Instant         bool           `json:"instant"`
 	LegendFormat    string         `json:"legendFormat"`
 	Step            string         `json:"step"`
+	Annotation      bool           `json:"annotation"`
 }
 
 // readOnlyKeywords are the only words a read-only query may start with (ADR-7).
@@ -76,6 +78,14 @@ func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend
 	// Oracle.
 	if qm.Mode == "prometheus" {
 		return d.promQuery(ctx, query, qm)
+	}
+
+	// F9: an annotation query (report §11) is consumed by Grafana's annotation
+	// reader, which maps fields by name (time/title/text/tags) straight off a
+	// table frame — a time-series conversion would reshape and corrupt it, so
+	// force the table shape before scanning.
+	if qm.Annotation {
+		qm.Format = convert.FormatTable
 	}
 
 	// ADR-7: guard the raw SQL first (the interpolated form is re-guarded
@@ -357,6 +367,14 @@ func (d *Datasource) buildFrame(rows *sql.Rows, qm queryModel) backend.DataRespo
 	frame, err := convert.BuildFrame(cols, rowVals, opt)
 	if err != nil {
 		return d.queryError(err)
+	}
+	// F9: mark annotation queries so Grafana treats the frame as annotation
+	// events (DataTopic.Annotations, report §11) instead of panel data.
+	if qm.Annotation {
+		if frame.Meta == nil {
+			frame.Meta = &data.FrameMeta{}
+		}
+		frame.Meta.DataTopic = data.DataTopicAnnotations
 	}
 	resp.Frames = append(resp.Frames, frame)
 	return resp

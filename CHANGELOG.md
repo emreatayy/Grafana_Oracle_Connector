@@ -291,6 +291,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Prometheus, and a multi-select dashboard whose `${var:csv}` panel shows only
   the selected values) — the F8 DoD "dropdown variable + multi-select dashboard
   scenarios e2e".
+- **F9 — Annotations + autocomplete** (report §11 + §14.3 + §18): a dashboard
+  **annotation** whose target is a datasource query now renders on the panel.
+  `applyTemplateVariables` marks the query when the annotation runner injects
+  `scopedVars.__annotation` (`query.annotation`), the backend forces the **table**
+  shape and sets `frame.Meta.DataTopic = Annotations` (the frame meta that makes
+  Grafana draw the events; the reader maps `time`/`title`/`text` by name).
+  New **metadata resource** (`metadata/tables`, `metadata/columns` under
+  `CallResource`) serves the accessible table list (`ALL_TAB_COMMENTS`, bounded to
+  200, 5-min TTL cache) and the typed column list (`ALL_TAB_COLUMNS` ⋈
+  `ALL_COL_COMMENTS`, schema-qualified names supported), degrading **silently to
+  empty arrays** when the account lacks the metadata views or the DB is down. The
+  SQL editor is now built per datasource (`buildOracleLanguage(ds)`) and its
+  **completion** resolves Tables/Columns from the metadata resource via the
+  plugin-ui `customProvider` extension points (spread over the standard provider
+  so keyword completion is kept); the **time-column dropdown** lists the
+  DATE/TIMESTAMP columns of the parsed FROM table. Verified: `TestIntegration_Annotation`
+  + `TestIntegration_Metadata` (6 subtests) on Oracle 21c, e2e
+  `tests/annotations.spec.ts` (asserts `schema.meta.dataTopic === 'annotations'`
+  on the annotation runner's `/api/ds/query` call — server `GET /api/annotations`
+  only returns persisted annotations), full e2e suite 13/13.
 
 ### Fixed
 

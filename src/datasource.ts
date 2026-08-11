@@ -12,6 +12,24 @@ export interface PromAPIResponse<T> {
   error?: string;
 }
 
+// Schema metadata served by the backend resource (report §14.3). A column's
+// dataType is the Oracle type (DATE/TIMESTAMP/NUMBER/…) used to pick date/time
+// time-column candidates; comment is the optional ALL_COL_COMMENTS text.
+export interface MetadataColumn {
+  name: string;
+  dataType: string;
+  comment?: string;
+}
+
+interface MetadataTablesResponse {
+  tables: string[];
+}
+
+interface MetadataColumnsResponse {
+  table?: string;
+  columns: MetadataColumn[];
+}
+
 export class DataSource extends DataSourceWithBackend<MyQuery, MyDataSourceOptions> {
   constructor(instanceSettings: DataSourceInstanceSettings<MyDataSourceOptions>) {
     super(instanceSettings);
@@ -48,6 +66,26 @@ export class DataSource extends DataSourceWithBackend<MyQuery, MyDataSourceOptio
     return resp?.data ?? [];
   }
 
+  // --- Schema metadata (F9, report §14.3) --------------------------------
+  // Both are served by the backend resource handler from ALL_TAB_COMMENTS /
+  // ALL_TAB_COLUMNS with a 5-minute cache. The backend is silent-empty on any
+  // metadata error (permission missing, database down) — the UI falls back to
+  // Auto + free text instead of surfacing an error.
+
+  // Table names the datasource account can access (bounded server-side; the
+  // optional prefix narrows the list for editor completion).
+  async getMetadataTables(prefix?: string): Promise<string[]> {
+    const resp = await this.getResource<MetadataTablesResponse>('metadata/tables', prefix ? { prefix } : {});
+    return resp?.tables ?? [];
+  }
+
+  // Columns of one table; `table` may be schema-qualified (OWNER.TABLE). Used
+  // by the editor completion and the time-column dropdown.
+  async getMetadataColumns(table: string): Promise<MetadataColumn[]> {
+    const resp = await this.getResource<MetadataColumnsResponse>('metadata/columns', { table });
+    return resp?.columns ?? [];
+  }
+
   getDefaultQuery(_: CoreApp): Partial<MyQuery> {
     return DEFAULT_QUERY;
   }
@@ -76,6 +114,11 @@ export class DataSource extends DataSourceWithBackend<MyQuery, MyDataSourceOptio
   // queries resolve only $__ macros + TimeRange (§8.3). The saved query is
   // never mutated.
   applyTemplateVariables(query: MyQuery, scopedVars: ScopedVars, _filters?: AdHocVariableFilter[]): MyQuery {
+    // F9: a dashboard annotation target calls this hook with a `__annotation`
+    // scopedVar (Grafana 13 executeAnnotationQuery). Mark the query so the
+    // backend shapes the frame as an annotation (report §11). The marker must
+    // survive the early return below when there are no other variables.
+    const annotation = Boolean(scopedVars && scopedVars['__annotation']);
     const vars: Record<string, unknown> = {};
 
     const add = (name: string, value: unknown) => {
@@ -112,9 +155,7 @@ export class DataSource extends DataSourceWithBackend<MyQuery, MyDataSourceOptio
       }
     }
 
-    if (Object.keys(vars).length === 0) {
-      return query;
-    }
-    return { ...query, scopedVars: vars };
+    const next = Object.keys(vars).length === 0 ? query : { ...query, scopedVars: vars };
+    return annotation ? { ...next, annotation: true } : next;
   }
 }

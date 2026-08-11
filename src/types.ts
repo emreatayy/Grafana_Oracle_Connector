@@ -15,7 +15,9 @@ export type PromAuthType = 'none' | 'basic' | 'token';
 // applyTemplateVariables (alert queries never carry them — §8.3). F4 adds mode
 // (the editor tab selection, stored per query). F6 adds the Prometheus fields:
 // promql, instant (query vs query_range), legendFormat and an optional step
-// override; F7 wires their editor UI.
+// override; F7 wires their editor UI. F9 adds annotation, the marker
+// applyTemplateVariables sets when a dashboard annotation target calls in
+// (report §11) — the backend shapes it as an annotation frame.
 export interface MyQuery extends DataQuery {
   sql: string;
   mode?: QueryMode;
@@ -27,6 +29,7 @@ export interface MyQuery extends DataQuery {
   instant?: boolean;
   legendFormat?: string;
   step?: string;
+  annotation?: boolean;
 }
 
 export const DEFAULT_QUERY: Partial<MyQuery> = {

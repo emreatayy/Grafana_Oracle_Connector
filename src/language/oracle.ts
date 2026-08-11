@@ -5,13 +5,26 @@
 // layered on. The monarch tokenizer reads the `keywords` / `builtinFunctions` /
 // `operators` arrays via its built-in @-cases, so overriding them is enough to
 // change what gets highlighted. F9 adds a completionProvider (tables/columns
-// from metadata) on top of the same language definition.
+// from the metadata resource) on top of the same language definition — the
+// plugin-ui SQLEditor feeds the provider's `tables`/`columns` resolvers into
+// the SuggestionKind.Tables/Columns registry entries that are otherwise empty.
 import {
+  getStandardSQLCompletionProvider,
   grafanaStandardSQLLanguage,
   grafanaStandardSQLLanguageConf,
+  type ColumnDefinition,
   type LanguageDefinition,
   type SQLMonarchLanguage,
+  type TableDefinition,
+  type TableIdentifier,
 } from '@grafana/plugin-ui';
+
+// The subset of the datasource the completion resolvers need (report §14.3).
+// Threaded in by the QueryEditor so the language definition stays pure.
+export interface OracleMetadataClient {
+  getMetadataTables(prefix?: string): Promise<string[]>;
+  getMetadataColumns(table: string): Promise<Array<{ name: string; dataType: string; comment?: string }>>;
+}
 
 // Oracle-specific SQL/PL/SQL words layered on the ANSI set.
 const ORACLE_KEYWORDS = [
@@ -153,10 +166,48 @@ const oracleLanguage: SQLMonarchLanguage = {
   logicalOperators: [...(grafanaStandardSQLLanguage.logicalOperators ?? []), 'NOT'],
 };
 
-export const oracleSQLLanguage: LanguageDefinition = {
-  id: 'oracle-sql',
-  loader: async () => ({
-    language: oracleLanguage,
-    conf: grafanaStandardSQLLanguageConf,
-  }),
-};
+// buildOracleLanguage assembles the SQLEditor language for a datasource. The
+// completionProvider is where plugin-ui's schema completion plugs in: it starts
+// from the standard keyword/function/operator provider (so the Oracle monarch
+// builtinFunctions keep working) and layers the metadata-driven table/column
+// resolvers on top. `metadata` is captured at mount time and is stable for the
+// datasource's lifetime, so late resolver calls are safe.
+export function buildOracleLanguage(metadata: OracleMetadataClient): LanguageDefinition {
+  return {
+    id: 'oracle-sql',
+    loader: async () => ({
+      language: oracleLanguage,
+      conf: grafanaStandardSQLLanguageConf,
+    }),
+    completionProvider: (monaco, language) => {
+      const standard = getStandardSQLCompletionProvider(monaco, language ?? oracleLanguage);
+      return {
+        ...standard,
+        // After FROM / after a schema — offer the accessible tables, narrowed
+        // by the identifier being typed.
+        tables: {
+          resolve: async (identifier: TableIdentifier | null): Promise<TableDefinition[]> => {
+            const prefix = identifier?.table ?? '';
+            const tables = await metadata.getMetadataTables(prefix);
+            // completion === name makes the SQLEditor advance the cursor after
+            // insertion (its InsertAsSnippet rule for tables).
+            return tables.map((name) => ({ name, completion: name }));
+          },
+        },
+        // After SELECT/WHERE/ORDER BY with a known table — offer its columns.
+        // dataType becomes the completion detail so DATE/TIMESTAMP columns stand
+        // out as time-column candidates.
+        columns: {
+          resolve: async (identifier?: TableIdentifier): Promise<ColumnDefinition[]> => {
+            if (!identifier?.table) {
+              return [];
+            }
+            const qualified = identifier.schema ? `${identifier.schema}.${identifier.table}` : identifier.table;
+            const cols = await metadata.getMetadataColumns(qualified);
+            return cols.map((c) => ({ name: c.name, completion: c.name, type: c.dataType, description: c.comment }));
+          },
+        },
+      };
+    },
+  };
+}
