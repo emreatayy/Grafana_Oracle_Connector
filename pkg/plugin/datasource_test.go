@@ -300,6 +300,167 @@ func TestQuery_PrometheusInstant(t *testing.T) {
 	}
 }
 
+// TestQuery_PromLabelValues_SingleArg serves a Grafana query variable
+// `label_values(job)` (report §8.5): the single-argument form returns a
+// one-column frame whose values become the dropdown options.
+func TestQuery_PromLabelValues_SingleArg(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":["prometheus","node"]}`))
+	}))
+	defer srv.Close()
+
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+	ds.settings.PromEnabled = true
+	ds.settings.PromURL = srv.URL
+
+	req := &backend.QueryDataRequest{
+		Queries: []backend.DataQuery{{
+			RefID:     "A",
+			JSON:      json.RawMessage(`{"mode":"prometheus","promql":"label_values(job)"}`),
+			TimeRange: backend.TimeRange{From: time.Unix(0, 0), To: time.Unix(3600, 0)},
+		}},
+	}
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("QueryData: %v", err)
+	}
+	dr := resp.Responses["A"]
+	if dr.Error != nil {
+		t.Fatalf("unexpected error: %v", dr.Error)
+	}
+	if gotPath != "/api/v1/label/job/values" {
+		t.Errorf("path = %q, want /api/v1/label/job/values", gotPath)
+	}
+	if len(dr.Frames) != 1 {
+		t.Fatalf("frames = %d, want 1", len(dr.Frames))
+	}
+	frame := dr.Frames[0]
+	if frame.Fields[0].Name != "job" || frame.Rows() != 2 {
+		t.Fatalf("field = %s rows = %d, want job / 2", frame.Fields[0].Name, frame.Rows())
+	}
+	if got := frame.Fields[0].At(0).(string); got != "prometheus" {
+		t.Errorf("first value = %q, want prometheus", got)
+	}
+}
+
+// TestQuery_PromLabelValues_TwoArgs serves `label_values(up, job)`: distinct
+// job values collected from the series matching `up`, sorted.
+func TestQuery_PromLabelValues_TwoArgs(t *testing.T) {
+	var gotPath, gotMatch string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMatch = r.URL.Query().Get("match[]")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":[
+			{"__name__":"up","job":"prometheus","instance":"a"},
+			{"__name__":"up","job":"node","instance":"b"},
+			{"__name__":"up","job":"prometheus","instance":"c"}
+		]}`))
+	}))
+	defer srv.Close()
+
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+	ds.settings.PromEnabled = true
+	ds.settings.PromURL = srv.URL
+
+	req := &backend.QueryDataRequest{
+		Queries: []backend.DataQuery{{
+			RefID:     "A",
+			JSON:      json.RawMessage(`{"mode":"prometheus","promql":"label_values(up, job)"}`),
+			TimeRange: backend.TimeRange{From: time.Unix(0, 0), To: time.Unix(3600, 0)},
+		}},
+	}
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("QueryData: %v", err)
+	}
+	dr := resp.Responses["A"]
+	if dr.Error != nil {
+		t.Fatalf("unexpected error: %v", dr.Error)
+	}
+	if gotPath != "/api/v1/series" {
+		t.Errorf("path = %q, want /api/v1/series", gotPath)
+	}
+	if gotMatch != "up" {
+		t.Errorf("match[] = %q, want up", gotMatch)
+	}
+	frame := dr.Frames[0]
+	if frame.Rows() != 2 {
+		t.Fatalf("rows = %d, want 2 (distinct jobs, sorted)", frame.Rows())
+	}
+	got := []string{frame.Fields[0].At(0).(string), frame.Fields[0].At(1).(string)}
+	if got[0] != "node" || got[1] != "prometheus" {
+		t.Errorf("values = %v, want [node prometheus] sorted", got)
+	}
+}
+
+// TestQuery_PromLabelValues_NotIntercepted: a real PromQL expression that
+// merely contains the word label_values is not intercepted — it must still go
+// to /api/v1/query_range.
+func TestQuery_PromLabelValues_NotIntercepted(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+	}))
+	defer srv.Close()
+
+	ds := newTestDatasource(t)
+	defer ds.Dispose()
+	ds.settings.PromEnabled = true
+	ds.settings.PromURL = srv.URL
+
+	req := &backend.QueryDataRequest{
+		Queries: []backend.DataQuery{{
+			RefID:         "A",
+			JSON:          json.RawMessage(`{"mode":"prometheus","promql":"up + on(job) group_left label_values"}`),
+			TimeRange:     backend.TimeRange{From: time.Unix(0, 0), To: time.Unix(3600, 0)},
+			MaxDataPoints: 360,
+		}},
+	}
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("QueryData: %v", err)
+	}
+	if err := resp.Responses["A"].Error; err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPath != "/api/v1/query_range" {
+		t.Errorf("path = %q, want /api/v1/query_range (not intercepted)", gotPath)
+	}
+}
+
+// TestQuery_PromLabelValues_ProxyDisabled: label_values is gated by promEnabled
+// exactly like any Prometheus query — a clean 400, never touching Oracle.
+func TestQuery_PromLabelValues_ProxyDisabled(t *testing.T) {
+	ds := newTestDatasource(t)
+	defer ds.Dispose() // promEnabled stays false
+
+	req := &backend.QueryDataRequest{
+		Queries: []backend.DataQuery{{
+			RefID: "A",
+			JSON:  json.RawMessage(`{"mode":"prometheus","promql":"label_values(job)"}`),
+		}},
+	}
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("QueryData: %v", err)
+	}
+	dr := resp.Responses["A"]
+	if dr.Error == nil {
+		t.Fatal("expected an error, got none")
+	}
+	if !strings.Contains(dr.Error.Error(), "disabled") {
+		t.Errorf("error = %v, want the disabled-proxy message", dr.Error)
+	}
+}
+
 func TestQuery_EmptySQLRejected(t *testing.T) {
 	ds := newTestDatasource(t)
 	defer ds.Dispose()

@@ -160,6 +160,30 @@ func (c *Client) RawJSON(ctx context.Context, path string, params url.Values) ([
 	return c.rawGet(ctx, path, params)
 }
 
+// LabelValues returns every value of a label across all series
+// (GET /api/v1/label/<name>/values). Backs the Grafana query variable
+// `label_values(<label>)` (report §8.5). The label name is caller-validated
+// ([a-zA-Z0-9_:]), so it is safe in the path.
+func (c *Client) LabelValues(ctx context.Context, label string) ([]string, error) {
+	var resp labelValuesResponse
+	if err := c.get(ctx, "/api/v1/label/"+label+"/values", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
+}
+
+// Series returns the series set matching a selector
+// (GET /api/v1/series?match[]=<selector>). Backs the two-argument Grafana
+// variable form `label_values(<metric>, <label>)` (report §8.5).
+func (c *Client) Series(ctx context.Context, match string) ([]map[string]string, error) {
+	params := url.Values{"match[]": {match}}
+	var resp seriesResponse
+	if err := c.get(ctx, "/api/v1/series", params, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
+}
+
 // get performs a GET against the API, decodes JSON into out, and maps HTTP
 // status + Prometheus `status:"error"` payloads to readable errors (§9.5).
 func (c *Client) get(ctx context.Context, path string, params url.Values, out any) error {
@@ -258,6 +282,21 @@ type buildInfoResponse struct {
 	} `json:"data"`
 	Error     string `json:"error"`
 	ErrorType string `json:"errorType"`
+}
+
+// labelValuesResponse is the /api/v1/label/<name>/values payload subset (F8).
+type labelValuesResponse struct {
+	Status string   `json:"status"`
+	Data   []string `json:"data"`
+	Error  string   `json:"error"`
+}
+
+// seriesResponse is the /api/v1/series payload subset (F7 metric browser, F8
+// two-argument label_values): a set of label maps.
+type seriesResponse struct {
+	Status string              `json:"status"`
+	Data   []map[string]string `json:"data"`
+	Error  string              `json:"error"`
 }
 
 // queryResponse is the shared envelope for /api/v1/query and /query_range.

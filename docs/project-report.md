@@ -427,6 +427,7 @@ ALTER SESSION SET NLS_COMP = 'BINARY'
 - The frontend sends the **raw** SQL + query model; it **does not** interpolate.
 - The backend uses the `sqlutil` engine — current import path `github.com/grafana/grafana-plugin-sdk-go/data/sqlutil` (moved from the legacy `backend/sqlutil`) — for parsing, longest-match and argument splitting, and defines its own **Oracle macro table**.
 - Dashboard variables reach the backend via `DataSourceWithBackend.applyTemplateVariables` (implemented in F3): the hook attaches the query's `scopedVars` (values stringified to strings / arrays of strings; built-ins and ad-hoc variables dropped), which the backend expands together with the macros. **Alert rules never call this hook** — ngalert evaluates server-side with no frontend — so alert queries carry no `scopedVars` and resolve only `$__*` + `TimeRange` (§8.3).
+- **Grafana 13 scenes merge (F8 finding):** on Grafana 13 (scenes), a dashboard panel request's `scopedVars` carries only the `__`-internal vars (`__sceneObject`, `__interval`, …) — **dashboard variables are not in it** — so a scenes dashboard would never resolve `${var}` through the request alone. `applyTemplateVariables` therefore **also merges the current values of every variable from the global template service** (`getTemplateSrv().getVariables()`, read at query time, saved query never mutated). Dashboard variables come back through that path; the backend is unchanged (it only sees the merged `scopedVars`). Verified manually on 13.1.0 (variable editor + `/api/ds/query` + scenes dashboard) and by the multi-select dashboard e2e.
 - The frontend "SQL preview" feature is **display-only** (templateSrv + local macro simulation).
 
 > **Why sqlutil's defaults are not enough (verified 2026-08-07 against `data/sqlutil`):** `Interpolate` is **macro-only** — it expands `$__*` macros and never touches `${var}` (the `Query` model has no variables field), so **variable interpolation is entirely ours**. The default `$__timeFilter` produces a Postgres-style string literal (`col >= '...'`); in Oracle this risks NLS-dependent implicit conversion. `$__unixEpochFilter`/`$__unixEpochGroup` are **not** in the defaults; `$__timeGroup` emits `datepart(...)` (T-SQL/Postgres), not Oracle `TRUNC`. Multi-value `IN(...)` expansion is **not** in sqlutil. → Take the engine (parse/longest-match/args), write the macro definitions Oracle-specific.
@@ -487,6 +488,17 @@ ALTER SESSION SET NLS_COMP = 'BINARY'
 | `GET /api/v1/label/<name>/values` | Prometheus query variable (`label_values`) |
 | `GET /api/v1/series` (`match[]`) | metric browser label values (F7) |
 | `GET /api/v1/status/buildinfo` | health check |
+
+**Query-variable interception (F8):** a Grafana query variable in Prometheus mode
+reads its options from a **one-column frame**. The `label_values(<label>)` and
+`label_values(<metric>, <label>)` variable syntax is **intercepted in the
+backend** (`promLabelValues`, anchored regex in `pkg/plugin`) **before the PromQL
+parser** and served as a one-column string frame (first field = dropdown
+options) — single-arg via `label/<name>/values`, two-arg via
+`series?match[]=<metric>` then distinct + sorted label values. A real PromQL
+expression that merely contains `label_values` as an identifier is never
+mis-detected. SQL-mode variables use the normal query path and need only a
+single-column `SELECT` (report §8, F8).
 
 ### 9.3 Matrix → Frame
 
@@ -859,6 +871,40 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 **F8 — Variables** · 3 pg
 - Query variables (SQL single column + Prometheus `label_values`); multi-value `IN(...)` (core in F3; DS integration here); empty-value behavior.
 - **DoD:** Dropdown variable + multi-select dashboard scenarios e2e.
+- **Status (2026-08-10):** ✅ **done.** Grafana **query variables** work through
+  the standard variable path (F3's `DataSourceVariableSupport` + `QueryEditor`),
+  with one backend addition: **Prometheus `label_values(...)`** — the Grafana
+  query-variable syntax would otherwise hit the PromQL parser and fail — is
+  **intercepted** by an anchored regex in `pkg/plugin` (`promLabelValues`) before
+  any PromQL parsing, and served as a one-column frame (first field = dropdown
+  options). Single-arg `label_values(<label>)` → `GET /api/v1/label/<name>/values`;
+  two-arg `label_values(<metric>, <label>)` → `series?match[]=<metric>` then
+  **distinct + sorted** label values. New `pkg/prom` methods `LabelValues`/
+  `Series` (both fixture-tested). A real PromQL expression that merely contains
+  `label_values` as an identifier is never mis-detected (anchored regex) and
+  still runs `query_range`. Multi-value **`${var:csv}` → `IN (...)`** (F3 engine)
+  and **empty selection → `IN (NULL)` → no rows** are verified end-to-end. **DoD
+  met** — verified on Grafana 12.4.0 + 13.1.0: `verification/variable_check.py`
+  5/5 (SQL single-column, both `label_values` forms, multi-value `IN`, empty
+  value) and e2e `tests/variables.spec.ts` (SQL dropdown, `label_values(job)`
+  dropdown via the variable editor, and a multi-select dashboard whose panel
+  renders only the selected values). Full unit suite + lint clean; plugin check
+  still 6/6.
+  **Two regression fixes landed with F8 (each caught by the e2e suite):**
+  (a) `filterQuery` was SQL-only, so `runRequest` dropped **every
+  Prometheus-mode** query (F7 dashboard panels, F8 `label_values` variables) —
+  it is now mode-aware (`prometheus` → checks `promql`); (b) the data-query
+  spec that runs LAST in `queryEditor.spec.ts` flaked only in the suite: Grafana
+  13's new datasource combobox left its option list async-empty, `datasource.set`
+  (fill + ArrowDown/ArrowUp + Enter) dropped the selection, and the panel *kept*
+  the default test-data datasource — no `/api/ds/query` POST ever reached the
+  plugin (trace-verified: no POST + TestData query row at refresh time). The spec
+  now selects the datasource deterministically (type → wait for the option →
+  explicit click) and waits for the oracle QueryEditor to mount before running.
+  (A third, frontend: a monaco unmount `onChange('')` fired through plugin-ui's
+  stale callback no longer flips the query back to the tab the user just left —
+  `QueryEditor` drops change events whose mode is not active via a live
+  `modeRef`.)
 
 **F9 — Annotations + autocomplete** · 4 pg
 - Annotation handler + frame (11); metadata service (14.3, cache + silent disable without permissions); feeding the time-column dropdown.
@@ -938,7 +984,7 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 
 ## 21. Assumptions to Verify and Open Decisions
 
-Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0), Grafana 12.4/13.1, and the F0-built plugin. **11 of 11 resolved.**
+Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0), Grafana 12.4/13.1, and the F0-built plugin. **12 of 12 resolved.**
 
 | # | Check | Affects |
 |---|---|---|
@@ -954,6 +1000,7 @@ Empirical checks run **2026-08-07** against a live Oracle 21c XE (go-ora v2.9.0)
 | 10 | **✅ Verified (2026-08-09, F6 end-to-end on Grafana 12.4.0 :3001 + 13.1.0 :3002 against Prometheus 3.5.0 via `verification/prom_check.py`, 5/5):** (a) `mode="prometheus"` query_range → a **wide** frame (single `time` field + one `*float64` field per series, labels on fields, `__name__` stripped → series name) with the raw PromQL on `executedQueryString`; (b) instant (`query`) → a wide **single-row** frame; (c) a proxied failure (unreachable host) surfaces as per-query status 500 with `network error: prometheus unreachable: …` — and the text never contains the configured bearer token (credentials never logged). **Grafana platform quirk:** a datasource's plugin-settings can go stale after an update — once a datasource has been queried, a subsequent update-then-query (or health "Test") may keep serving the **old** settings for a while (Grafana's server-side settings cache; not plugin-side — the plugin faithfully uses whatever settings it receives). Verified on both versions: after a `PUT /api/datasources` the health endpoint still reported the old `promUrl`. Consequences: the prom check uses **two** datasources (valid + broken) rather than create→update→query, and users editing a datasource should not expect an *immediately* updated behavior on a query that runs right after — a page reload / brief wait picks it up | 9 / F6 |
 
 | 11 | **✅ Verified (2026-08-10, F7 end-to-end on Grafana 12.4.0 :3001 + 13.1.0 :3002 against Prometheus 3.5.0 via `verification/prom_check.py`, 11/11):** (a) the metric-browser resources are proxy-able: `label/__name__/values` returns the metric list (contains `up`), `labels` returns label names (contains `job`), `series?match[]=up` returns the series set; (b) a metric name picked from the browser feeds an instant query → correct frame (resource → PromQL → panel); (c) an **unknown** resource path → clean 404 (never a proxy pass-through); (d) credentials never logged holds for resource errors too. Plus the **F7 DoD "panel + alert"**: `verification/alert_check.py` (now **8/8**) runs a Prometheus-mode alert rule `up > 0` on the provisioned prom-only datasource (`provisioning/datasources/datasources-prom.yml`) — it evaluates through the proxy and fires (`state=firing, health=ok`). **Design note:** a Prometheus-only datasource still requires the Oracle connection jsonData — the plugin is "Oracle with an optional Prometheus proxy" and builds its DSN at instance construction (§5) — but it is only ever queried in Prometheus mode | 9 / F7 |
+| 12 | **✅ Verified (2026-08-10, F8 end-to-end on Grafana 12.4.0 :3001 + 13.1.0 :3002 via `verification/variable_check.py`, 5/5):** (a) a **SQL single-column** query (`SELECT DISTINCT object_type … WHERE object_type IN ('TABLE','VIEW')`) feeds a Grafana query variable → dropdown `['TABLE','VIEW']`; (b) **`label_values(job)`** (single-arg) → `GET /api/v1/label/job/values` → `['prometheus']`; (c) **`label_values(up, job)`** (two-arg) → `series?match[]=up` then distinct+sorted `job` → `['prometheus']` — both intercepted by the plugin before the PromQL parser, served as a one-column frame; (d) **multi-value** `WHERE object_type IN (${v:csv})` with `scopedVars v=['TABLE','VIEW']` → both rows (F3 interpolation); (e) **empty** selection (`v=[]`) → `IN (NULL)` → no rows. DoD "dropdown variable + multi-select dashboard e2e" met by `tests/variables.spec.ts` (3/3: SQL dropdown, `label_values(job)` dropdown in the variable editor, and an API-created multi-select dashboard whose panel renders only the selected values) | 8.5 / F8 |
 
 **Open decisions (with recommended defaults):**
 

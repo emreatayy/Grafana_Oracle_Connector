@@ -83,9 +83,28 @@ test('time column select accepts a custom column name', async ({ panelEditPage, 
 
 // The default query (SELECT 1 AS value FROM DUAL) runs against the real Oracle
 // when the panel loads. Requires the matrix Oracle (oracle21) to be up.
-test('data query should return a frame', async ({ panelEditPage, readProvisionedDataSource }) => {
+test('data query should return a frame', async ({ panelEditPage, readProvisionedDataSource, page }) => {
   const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
-  await panelEditPage.datasource.set(ds.name);
+  // Grafana 13's new datasource combobox (downshift) can leave its option list
+  // momentarily empty for an async load: the plugin-e2e `datasource.set` fills
+  // the input then presses ArrowDown/ArrowUp + Enter, and if Enter lands before
+  // the option is loaded the selection is silently dropped — the panel then
+  // KEEPS the previous (-- Grafana --) datasource and our query never runs.
+  // Observed only for the oracle datasource when this test runs LAST in the
+  // suite (F8): the refresh showed the TestData query row and never POSTed.
+  // Selection is deterministic here: focus the combobox, type the name, wait for
+  // the filtered entry, then click it (F8). NOTE Grafana 13's datasource
+  // combobox renders its entries as BUTTONS in a dialog (accessible name
+  // "<name> <description>"), not as react-select's role="option" — a
+  // getByRole('option') locator never matches and times out.
+  await page.getByTestId('data-testid Select a data source').click();
+  await page.keyboard.type(ds.name);
+  const entry = page.getByRole('button', { name: new RegExp(`^${ds.name}`) }).first();
+  await expect(entry).toBeVisible({ timeout: 15000 });
+  await entry.click();
+  // The datasource commit is async in scenes; the oracle QueryEditor mounts only
+  // after the query model is replaced — wait for it before running the query.
+  await expect(panelEditPage.getQueryEditorRow('A').getByTestId('query-editor-sql')).toBeVisible();
   await panelEditPage.setVisualization('Table');
   await expect(panelEditPage.refreshPanel()).toBeOK();
   await expect(panelEditPage.panel.data).toContainText(['1']);

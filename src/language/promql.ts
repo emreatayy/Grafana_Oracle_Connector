@@ -72,6 +72,9 @@ const PROMQL_FUNCTIONS = [
   'sort',
   'sort_desc',
   'histogram_quantile',
+  // Grafana query-variable syntax (F8) — intercepted server-side, highlighted
+  // as a function so the variable editor reads naturally.
+  'label_values',
   // time / date
   'time',
   'timestamp',

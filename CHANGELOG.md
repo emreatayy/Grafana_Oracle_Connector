@@ -270,6 +270,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `up` alert rule on a provisioned prom-only datasource
   (`provisioning/datasources/datasources-prom.yml`), and a metric-browser e2e
   spec, all on Grafana 12.4 + 13.1.
+- **F8 — Grafana query variables** (report §8.5 + §18): the variable editor
+  (wired in F3 via `DataSourceVariableSupport`) now fully supports both
+  variable sources. **SQL single-column** queries feed the dropdown through the
+  standard query path. **Prometheus `label_values(...)`** is intercepted in the
+  backend before the PromQL parser — `label_values(label)` lists every value of
+  a label (`/api/v1/label/<name>/values`), `label_values(metric, label)` lists
+  a label's distinct values among the series matching a metric
+  (`/api/v1/series?match[]=`), both as a one-column string frame (new
+  `pkg/prom` `LabelValues`/`Series` methods). Multi-value `IN(...)` (core in
+  F3) and empty-value `IN (NULL)` are verified end-to-end via `scopedVars`.
+  `applyTemplateVariables` now **also merges the template service's variable
+  values** (`getTemplateSrv().getVariables()`) — Grafana 13 scenes puts only
+  `__`-internal vars in a panel request's `scopedVars`, so dashboard `${var}`
+  would otherwise never reach the backend on 13 (report §8.1). The PromQL
+  language highlights `label_values`. Verified end-to-end:
+  `verification/variable_check.py` 5/5 on Grafana 12.4 + 13.1 (SQL variable,
+  both `label_values` forms through the real proxy, multi-value IN, empty →
+  no rows), and e2e `tests/variables.spec.ts` (dropdown variable for SQL +
+  Prometheus, and a multi-select dashboard whose `${var:csv}` panel shows only
+  the selected values) — the F8 DoD "dropdown variable + multi-select dashboard
+  scenarios e2e".
 
 ### Fixed
 
@@ -280,6 +301,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   int/bool value columns to `NullableFloat64` in time-series format
   (`timeSeriesValueField`), while tables keep int64/bool (report §6.1). Verified
   by unit tests and the F5 alert check (L1-firing is green on both versions).
+- **Prometheus-mode queries were dropped by `filterQuery`** (report §8.5/F8):
+  the frontend filter only checked the `sql` field, so `runRequest` silently
+  discarded every `mode: "prometheus"` query — F7 dashboard panels and F8
+  `label_values` variables never reached the plugin. The filter is now
+  mode-aware (`prometheus` → checks `promql`).
+- **Panel-editor query mode regressed under monaco's async onChange** (F8 e2e):
+  plugin-ui's `useLatestCallback` can fire a stale `onChange("")` that flipped a
+  just-switched editor back to the previous mode and clobbered the tab state.
+  `QueryEditor` now guards callbacks with a live `modeRef` (events are applied
+  only while their mode is active).
+- **data-query e2e flaked only when running LAST in the suite** (F8 e2e):
+  Grafana 13's new datasource combobox can leave its option list momentarily
+  empty, so plugin-e2e's `datasource.set` (fill + arrows + Enter) silently kept
+  the default test-data datasource and no `/api/ds/query` POST was ever made
+  (trace-verified). The spec now selects the datasource deterministically and
+  waits for the oracle QueryEditor to mount before refreshing.
 - Query editor crashed on Grafana **12.4** with
   `TypeError: undefined is not an object (evaluating 'e.datasource.datasourceInstanceSettings.jsonData')`
   — `datasourceInstanceSettings` exists only on the 13.x

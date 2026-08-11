@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -42,6 +44,15 @@ var readOnlyKeywords = map[string]bool{
 	"SELECT": true,
 	"WITH":   true,
 }
+
+// labelValuesRe matches the Grafana query-variable syntax (report §8.5):
+//
+//	label_values(<label>)            -> every value of a label
+//	label_values(<metric>, <label>)  -> a label's values among series matching a metric
+//
+// The regex is anchored so a real PromQL expression containing `label_values`
+// as an identifier is never mis-detected — only a bare, whole-query call.
+var labelValuesRe = regexp.MustCompile(`^\s*label_values\(\s*([a-zA-Z0-9_:]+)(?:\s*,\s*([a-zA-Z0-9_:]+)\s*)?\)\s*$`)
 
 // query executes a single query:
 //
@@ -134,6 +145,17 @@ func (d *Datasource) promQuery(ctx context.Context, query backend.DataQuery, qm 
 	}
 	client.SetLegendFormat(qm.LegendFormat)
 
+	// F8: a Grafana query-variable `label_values(...)` is intercepted here and
+	// never reaches the PromQL parser (report §8.5).
+	if frame, ok, lvErr := d.promLabelValues(ctx, qm.PromQL, client); ok {
+		if lvErr != nil {
+			return d.queryError(lvErr)
+		}
+		resp := backend.DataResponse{}
+		resp.Frames = append(resp.Frames, frame)
+		return resp
+	}
+
 	// Bound every query; the request context also propagates panel/alert
 	// cancellation (report §9.5).
 	qCtx := ctx
@@ -166,6 +188,50 @@ func (d *Datasource) promQuery(ctx context.Context, query backend.DataQuery, qm 
 	resp := backend.DataResponse{}
 	resp.Frames = append(resp.Frames, frame)
 	return resp
+}
+
+// promLabelValues serves the Grafana query-variable syntax `label_values(...)`
+// (report §8.5). The single-argument form lists every value of a label; the
+// two-argument form lists a label's values among the series matching a metric
+// (distinct, sorted). ok=false means the query is not a label_values call and
+// the normal PromQL path runs unchanged. Proxy failures are returned as-is and
+// surfaced with the standard credential-free error formatting.
+func (d *Datasource) promLabelValues(ctx context.Context, promql string, client *prom.Client) (*data.Frame, bool, error) {
+	m := labelValuesRe.FindStringSubmatch(strings.TrimSpace(promql))
+	if m == nil {
+		return nil, false, nil
+	}
+	// label_values(<label>) — m[1] is the label.
+	if m[2] == "" {
+		label := m[1]
+		values, err := client.LabelValues(ctx, label)
+		if err != nil {
+			return nil, true, err
+		}
+		return labelValuesFrame(label, values), true, nil
+	}
+	// label_values(<metric>, <label>) — m[1] is the metric, m[2] the label.
+	metric, label := m[1], m[2]
+	series, err := client.Series(ctx, metric)
+	if err != nil {
+		return nil, true, err
+	}
+	seen := map[string]bool{}
+	values := make([]string, 0)
+	for _, s := range series {
+		if v, ok := s[label]; ok && !seen[v] {
+			seen[v] = true
+			values = append(values, v)
+		}
+	}
+	sort.Strings(values)
+	return labelValuesFrame(label, values), true, nil
+}
+
+// labelValuesFrame builds the single-column frame a Grafana query variable
+// reads: the first field's values become the dropdown options (report §8.5).
+func labelValuesFrame(label string, values []string) *data.Frame {
+	return data.NewFrame("label_values", data.NewField(label, nil, values))
 }
 
 // promStep derives the Prometheus query_range step (report §9.3/§10.4): an

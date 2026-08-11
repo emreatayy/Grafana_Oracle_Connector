@@ -128,3 +128,33 @@ report §21 row 10), so the check does not rely on settings refresh. The
 provisioned `prometheus-datasource` (F7, for the alerting + e2e paths) is
 created on first Grafana start from `provisioning/datasources/datasources-prom.yml`
 — restart the Grafana after adding it so it gets provisioned.
+
+## Variable check (F8, report §8.5 + §18)
+
+`variable_check.py` exercises the two sources a Grafana **query variable** reads
+its values from, through the real `/api/ds/query` path (the same path the
+variable editor and dashboard variable evaluation use): a SQL single-column
+query, both Prometheus `label_values` forms, and multi-value `IN(...)`. It uses
+the **provisioned** datasources (`datasources.yml` oracle-datasource,
+`datasources-prom.yml` prometheus-datasource) so there is no settings-cache
+quirk:
+
+| # | Check | Expect |
+|---|---|---|
+| 1 | SQL single-column (`SELECT DISTINCT object_type … IN ('TABLE','VIEW')`) | `['TABLE','VIEW']` |
+| 2 | `label_values(job)` (single-arg) | `['prometheus']` |
+| 3 | `label_values(up, job)` (two-arg) | `['prometheus']` |
+| 4 | multi-value `WHERE object_type IN (${v:csv})`, `v=['TABLE','VIEW']` | both rows |
+| 5 | empty multi-value (`v=[]`) | `IN (NULL)` → no rows |
+
+```sh
+# prometheus-datasource is provisioned from datasources-prom.yml — restart the
+# Grafana after adding it (see prom check above); oracle + prom profiles up
+docker compose --profile prom --profile oracle21 up -d prometheus
+./variable_check.py --url http://127.0.0.1:3001
+./variable_check.py --url http://127.0.0.1:3002
+```
+
+Pure Python 3 stdlib; exits non-zero on any failed check. The e2e half of the
+F8 DoD ("dropdown variable + multi-select dashboard scenarios") is
+`tests/variables.spec.ts`.

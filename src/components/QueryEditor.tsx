@@ -35,14 +35,36 @@ export function QueryEditor(props: Props) {
   const settings = props.datasource.datasourceInstanceSettings ?? ds.instanceSettings;
   const mode: QueryMode = query.mode ?? settings?.jsonData?.defaultMode ?? 'sql';
 
+  // Live mode the change handlers read at CALL time (refs are not bound by the
+  // render closure). A monaco editor fires a spurious `onChange('')` from its
+  // unmount cleanup (dispose/blur) after a tab switch — the plugin-ui SQLEditor
+  // dispatches it through a stale callback (`useLatestCallback` updates after
+  // commit). Without this guard that event would pin the query back to the
+  // mode the user just left (F8 e2e regression).
+  const modeRef = React.useRef<QueryMode>(mode);
+  // Updating the ref during render is deliberate (and lint-gated): the guard
+  // must read the NEW mode synchronously, before React runs the previous
+  // editor's unmount cleanup — a spurious monaco onChange('') fires during the
+  // commit phase, i.e. BEFORE any post-commit effect would have synced the ref.
+  // eslint-disable-next-line react-hooks/refs
+  modeRef.current = mode;
+
   const onModeChange = (next: QueryMode) => {
     if (next !== mode) {
       onChange({ ...query, mode: next });
     }
   };
 
+  // Editing an editor's content also pins `mode` on the query — when the
+  // datasource's defaultMode is 'prometheus' the effective tab already is
+  // Prometheus, but query.mode stays undefined until written here, and the
+  // backend routes on query.mode (F8). A change event is only honoured while
+  // its mode is the ACTIVE one; late unmount events (above) are dropped.
   const onSQLChange = (sql: string) => {
-    onChange({ ...query, sql });
+    if (modeRef.current !== 'sql') {
+      return;
+    }
+    onChange({ ...query, mode: 'sql', sql });
   };
 
   const onFormatChange = (value: SelectableValue<QueryFormat>) => {
@@ -55,7 +77,10 @@ export function QueryEditor(props: Props) {
   };
 
   const onPromQLChange = (promql: string) => {
-    onChange({ ...query, promql });
+    if (modeRef.current !== 'prometheus') {
+      return;
+    }
+    onChange({ ...query, mode: 'prometheus', promql });
   };
 
   const onInstantChange = (e: React.ChangeEvent<HTMLInputElement>) => {

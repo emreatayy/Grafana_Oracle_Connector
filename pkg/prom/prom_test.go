@@ -322,6 +322,60 @@ func TestRawJSON_SeriesParams(t *testing.T) {
 	}
 }
 
+// TestLabelValues returns the values of a label (F8 `label_values(<label>)`).
+func TestLabelValues(t *testing.T) {
+	var gotPath string
+	srv := newFixtureServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte(`{"status":"success","data":["prometheus","node"]}`))
+	})
+	c, err := NewClient(srv.URL, Options{})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	values, err := c.LabelValues(context.Background(), "job")
+	if err != nil {
+		t.Fatalf("LabelValues: %v", err)
+	}
+	if gotPath != "/api/v1/label/job/values" {
+		t.Errorf("path = %q, want /api/v1/label/job/values", gotPath)
+	}
+	if len(values) != 2 || values[0] != "prometheus" || values[1] != "node" {
+		t.Errorf("values = %v, want [prometheus node]", values)
+	}
+}
+
+// TestSeries returns the series set matching a selector (F8
+// `label_values(<metric>, <label>)`).
+func TestSeries(t *testing.T) {
+	var gotPath, gotMatch string
+	srv := newFixtureServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMatch = r.URL.Query().Get("match[]")
+		_, _ = w.Write([]byte(`{"status":"success","data":[
+			{"__name__":"up","job":"prometheus","instance":"a"},
+			{"__name__":"up","job":"prometheus","instance":"b"}
+		]}`))
+	})
+	c, err := NewClient(srv.URL, Options{})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	series, err := c.Series(context.Background(), "up")
+	if err != nil {
+		t.Fatalf("Series: %v", err)
+	}
+	if gotPath != "/api/v1/series" {
+		t.Errorf("path = %q, want /api/v1/series", gotPath)
+	}
+	if gotMatch != "up" {
+		t.Errorf("match[] = %q, want up", gotMatch)
+	}
+	if len(series) != 2 || series[0]["job"] != "prometheus" {
+		t.Errorf("series = %v, want 2 series with job=prometheus", series)
+	}
+}
+
 func TestBuildInfo(t *testing.T) {
 	srv := newFixtureServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/status/buildinfo" {
