@@ -4,6 +4,7 @@ go 1.26.5
 
 require (
 	github.com/grafana/grafana-plugin-sdk-go v0.296.1
+	github.com/prometheus/client_golang v1.23.2
 	github.com/sijms/go-ora/v2 v2.9.0
 )
 
@@ -40,6 +41,7 @@ require (
 	github.com/jszwedko/go-datemath v0.1.1-0.20230526204004-640a500621d6 // indirect
 	github.com/klauspost/compress v1.19.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
+	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/magefile/mage v1.17.2 // indirect
 	github.com/mattetti/filebuffer v1.0.1 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
@@ -55,7 +57,6 @@ require (
 	github.com/olekukonko/tablewriter v1.1.4 // indirect
 	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
 	github.com/pierrec/lz4/v4 v4.1.27 // indirect
-	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect

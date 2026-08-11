@@ -13,6 +13,7 @@ import (
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	go_ora "github.com/sijms/go-ora/v2"
 
 	"github.com/emreatayy/oracle-datasource/pkg/models"
@@ -162,7 +163,7 @@ func TestIntegration_SimpleSelect(t *testing.T) {
 	resp := ds.query(context.Background(), backend.DataQuery{
 		RefID: "A",
 		JSON:  json.RawMessage(`{"sql":"SELECT 1 AS one, 'hello' AS greeting, TO_CHAR(SYSDATE, 'YYYY') AS yr FROM DUAL"}`),
-	})
+	}, "")
 	if resp.Error != nil {
 		t.Fatalf("query error: %v", resp.Error)
 	}
@@ -175,6 +176,34 @@ func TestIntegration_SimpleSelect(t *testing.T) {
 	}
 	if len(frame.Fields) != 3 {
 		t.Errorf("fields = %d, want 3", len(frame.Fields))
+	}
+}
+
+// TestIntegration_QueryMetrics exercises the F11 self-metrics on a real,
+// successful query (report §18 F11): a SELECT must count and time one
+// sql-mode query and record zero errors. The unit tests cover the rejection
+// paths; this one proves the happy path records through buildFrame.
+func TestIntegration_QueryMetrics(t *testing.T) {
+	ds := newIntegrationDatasource(t)
+	defer ds.Dispose()
+	resetMetrics(t)
+
+	resp := ds.query(context.Background(), backend.DataQuery{
+		RefID: "A",
+		JSON:  json.RawMessage(`{"sql":"SELECT COUNT(*) AS n FROM DUAL"}`),
+	}, "it-uid")
+	if resp.Error != nil {
+		t.Fatalf("query error: %v", resp.Error)
+	}
+
+	if got := testutil.ToFloat64(metrics.queryTotal.WithLabelValues("it-uid", "sql")); got != 1 {
+		t.Errorf("query_total{it-uid,sql} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(metrics.errorsTotal.WithLabelValues("it-uid", "sql")); got != 0 {
+		t.Errorf("errors_total{it-uid,sql} = %v, want 0 for a successful query", got)
+	}
+	if got := histogramSampleCount(t, "it-uid", "sql"); got != 1 {
+		t.Errorf("query_duration samples = %d, want 1", got)
 	}
 }
 
@@ -214,7 +243,7 @@ func TestIntegration_CancelLongQuery(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	resp := ds.query(ctx, backend.DataQuery{RefID: "A", JSON: json.RawMessage(`{"sql":` + mustJSON(heavy) + `}`)})
+	resp := ds.query(ctx, backend.DataQuery{RefID: "A", JSON: json.RawMessage(`{"sql":` + mustJSON(heavy) + `}`)}, "")
 	elapsed := time.Since(start)
 
 	// Must return well inside the 30s query timeout and not hang forever.
@@ -234,7 +263,7 @@ func TestIntegration_ReadOnlyGuard(t *testing.T) {
 	resp := ds.query(context.Background(), backend.DataQuery{
 		RefID: "A",
 		JSON:  json.RawMessage(`{"sql":"UPDATE dual SET dummy = 'x' WHERE 1=0"}`),
-	})
+	}, "")
 	if resp.Error == nil {
 		t.Fatal("expected read-only guard error, got nil")
 	}
@@ -258,7 +287,7 @@ func TestIntegration_Annotation(t *testing.T) {
 	annotation := func(extra string) *data.Frame {
 		t.Helper()
 		resp := ds.query(ctx, backend.DataQuery{RefID: "A",
-			JSON: json.RawMessage(`{"sql":"SELECT at AS \"time\", label AS \"title\", label AS \"text\" FROM gox_f2 ORDER BY id"` + extra + `}`)})
+			JSON: json.RawMessage(`{"sql":"SELECT at AS \"time\", label AS \"title\", label AS \"text\" FROM gox_f2 ORDER BY id"` + extra + `}`)}, "")
 		if resp.Error != nil {
 			t.Fatalf("query error: %v", resp.Error)
 		}
@@ -436,8 +465,8 @@ func seedF2Rows(t *testing.T, ds *Datasource, ctx context.Context) {
 	}
 	insert(42, 3.14, "web-1", "12345678901234567890", at, "clob-note") // full row
 	insert(7, nil, nil, nil, nil, nil)                                 // all-NULL row
-	insert(8, 1.0, "web-2", "2", at, nil)                               // duplicate time with id=42
-	insert(9, 2.0, "web-3", "3", nil, nil)                              // NULL time → skipped in ts
+	insert(8, 1.0, "web-2", "2", at, nil)                              // duplicate time with id=42
+	insert(9, 2.0, "web-3", "3", nil, nil)                             // NULL time → skipped in ts
 }
 
 // frameInt64s reads the first field of a frame as int64 values in row order.
@@ -477,7 +506,7 @@ func TestIntegration_TypedColumns(t *testing.T) {
 	t.Run("table typed", func(t *testing.T) {
 		sql := "SELECT id, ratio, label, big, at, notes FROM gox_f2 ORDER BY id"
 		resp := ds.query(ctx, backend.DataQuery{RefID: "A",
-			JSON: json.RawMessage(`{"sql":` + mustJSON(sql) + `,"format":"table"}`)})
+			JSON: json.RawMessage(`{"sql":` + mustJSON(sql) + `,"format":"table"}`)}, "")
 		if resp.Error != nil {
 			t.Fatalf("query error: %v", resp.Error)
 		}
@@ -522,7 +551,7 @@ func TestIntegration_TypedColumns(t *testing.T) {
 
 	t.Run("large number float in time series", func(t *testing.T) {
 		resp := ds.query(ctx, backend.DataQuery{RefID: "A",
-			JSON: json.RawMessage(`{"sql":"SELECT at AS t, big AS v FROM gox_f2 ORDER BY at","format":"auto"}`)})
+			JSON: json.RawMessage(`{"sql":"SELECT at AS t, big AS v FROM gox_f2 ORDER BY at","format":"auto"}`)}, "")
 		if resp.Error != nil {
 			t.Fatalf("query error: %v", resp.Error)
 		}
@@ -561,12 +590,12 @@ func TestIntegration_Macros(t *testing.T) {
 	query := func(raw string, extra string) (*data.Frame, error) {
 		t.Helper()
 		resp := ds.query(ctx, backend.DataQuery{
-			RefID:        "A",
-			TimeRange:    tr,
-			Interval:     time.Minute,
+			RefID:         "A",
+			TimeRange:     tr,
+			Interval:      time.Minute,
 			MaxDataPoints: 100,
-			JSON:         json.RawMessage(`{"sql":` + mustJSON(raw) + extra + `}`),
-		})
+			JSON:          json.RawMessage(`{"sql":` + mustJSON(raw) + extra + `}`),
+		}, "")
 		if resp.Error != nil {
 			return nil, resp.Error
 		}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 
 	"github.com/emreatayy/oracle-datasource/pkg/convert"
@@ -63,13 +64,41 @@ var labelValuesRe = regexp.MustCompile(`^\s*label_values\(\s*([a-zA-Z0-9_:]+)(?:
 // (report §8, ADR-2, ADR-7). The interpolated SQL is kept in a local variable
 // and never written back into qm.SQL, so ExecutedQueryString and any logging
 // always carry the raw, author-written SQL (§7.5, §15). Interpolation runs
-// before ensureReady so a macro/variable problem never pings the DB.
-func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend.DataResponse {
+// before ensureReady so a macro/variable problem never pings the DB. dsUID is
+// the datasource UID from the request PluginContext — it labels the F11
+// self-metrics (report §18 F11).
+func (d *Datasource) query(ctx context.Context, query backend.DataQuery, dsUID string) (resp backend.DataResponse) {
 	var qm queryModel
 	if err := json.Unmarshal(query.JSON, &qm); err != nil {
 		return backend.ErrDataResponse(backend.StatusBadRequest,
 			fmt.Sprintf("json unmarshal: %v", err.Error()))
 	}
+
+	// F11: every query is counted, timed and labelled by datasource UID and
+	// mode (report §18 F11); a failed query also bumps errors_total. The same
+	// defer adds the log entry — the message is safeMessage-shaped (password-
+	// redacted, §15) and never carries SQL or values. Client rejections (bad
+	// request) are Warn-level diagnostics; real failures are Error.
+	mode := queryMode(qm)
+	rec := newQueryRecorder(dsUID, mode)
+	defer func() {
+		rec.done(resp.Error != nil)
+		if resp.Error != nil {
+			if resp.Status == backend.StatusBadRequest {
+				log.DefaultLogger.Warn("oracle query rejected",
+					"datasource", dsUID, "mode", mode, "refId", query.RefID, "error", resp.Error.Error())
+			} else {
+				log.DefaultLogger.Error("oracle query failed",
+					"datasource", dsUID, "mode", mode, "refId", query.RefID, "error", resp.Error.Error())
+			}
+		} else {
+			// Execution trace lives at Debug: a dashboard refreshes every few
+			// seconds, so Info would drown the log. No SQL, values or query
+			// content — just the identifiers (§15).
+			log.DefaultLogger.Debug("oracle query executed",
+				"datasource", dsUID, "mode", mode, "refId", query.RefID)
+		}
+	}()
 
 	// F4/F6: the mode is the per-query editor selection (report §14.1). A
 	// Prometheus-mode query takes the proxy path (F6); anything else runs SQL
@@ -383,4 +412,14 @@ func (d *Datasource) buildFrame(rows *sql.Rows, qm queryModel) backend.DataRespo
 // queryError formats a query failure without leaking credentials or SQL.
 func (d *Datasource) queryError(err error) backend.DataResponse {
 	return backend.ErrDataResponse(backend.StatusInternal, d.safeMessage(err))
+}
+
+// queryMode returns the F11 metric/log mode label for a query model:
+// "prometheus" for Prometheus-mode queries, "sql" for everything else
+// (report §18 F11).
+func queryMode(qm queryModel) string {
+	if qm.Mode == "prometheus" {
+		return "prometheus"
+	}
+	return "sql"
 }

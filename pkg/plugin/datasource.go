@@ -119,11 +119,18 @@ func (d *Datasource) ensureReady(ctx context.Context) error {
 	return nil
 }
 
-// QueryData executes each query and returns one response per RefID.
+// QueryData executes each query and returns one response per RefID. The
+// datasource UID from the request context labels the F11 self-metrics
+// (report §18 F11); a request without a datasource instance records an empty
+// UID.
 func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
 	response := backend.NewQueryDataResponse()
+	dsUID := ""
+	if req.PluginContext.DataSourceInstanceSettings != nil {
+		dsUID = req.PluginContext.DataSourceInstanceSettings.UID
+	}
 	for _, q := range req.Queries {
-		response.Responses[q.RefID] = d.query(ctx, q)
+		response.Responses[q.RefID] = d.query(ctx, q, dsUID)
 	}
 	return response, nil
 }

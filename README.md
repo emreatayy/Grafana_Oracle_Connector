@@ -3,7 +3,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Grafana](https://img.shields.io/badge/Grafana-%E2%89%A512.3-F46800.svg)](https://grafana.com)
 [![Oracle](https://img.shields.io/badge/Oracle-%E2%89%A512c-red.svg)](https://www.oracle.com/database/)
-[![Status](https://img.shields.io/badge/status-F15%20done-brightgreen.svg)](#status)
+[![Status](https://img.shields.io/badge/status-F11%20done-brightgreen.svg)](#status)
 [![CI](https://github.com/emreatayy/Grafana_Oracle_Connector/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
 A **Grafana data source plugin for Oracle Database** with an optional
@@ -31,6 +31,7 @@ procedures) — all driven from the query editor.
 - [Version Support](#version-support)
 - [Repository Structure](#repository-structure)
 - [Getting Started (Development)](#getting-started-development)
+- [Metrics](#metrics)
 - [Documentation](#documentation)
 - [Roadmap](#roadmap)
 - [Release & Packaging](#release--packaging)
@@ -46,7 +47,7 @@ procedures) — all driven from the query editor.
 |---|---|
 | Design | ✅ Complete — `docs/project-report.md` (v2) |
 | Empirical verification | ✅ **11 of 11** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1, Prometheus 3.5.0) — see `verification/` |
-| Implementation | ✅ **F15 done** (connection core + typed mapping + macro & variable engine + SQL query editor + basic alerting + Prometheus proxy backend + PromQL editor & metric browser + query variables + annotations + editor autocomplete + health JSON + ORA error resolution + **command execution / operations UI**) — next: F11 (security, log hygiene, self-metrics) |
+| Implementation | ✅ **F11 done** (connection core + typed mapping + macro & variable engine + SQL query editor + basic alerting + Prometheus proxy backend + PromQL editor & metric browser + query variables + annotations + editor autocomplete + health JSON + ORA error resolution + **command execution / operations UI** + **security audit, log hygiene & self-metrics**) — next: F12 (performance, limits, streaming, caching) |
 
 The report's riskiest assumptions were validated empirically before any code
 was written, which produced two design corrections early:
@@ -334,6 +335,44 @@ Pinned dependencies (pinned at F0, 2026-08-07):
 > side-effect, function value "42", DDL/DML rejected), e2e
 > `tests/command.spec.ts` on 12.4 + 13.1, full e2e suite 16/16 on 13.1, plugin
 > check 6/6 on 12.4 + 13.1.
+>
+> **F11 (2026-08-11):** **Security audit, log hygiene & self-metrics** — the
+> plugin now exports `oracle_datasource_query_total`, `oracle_datasource_errors_total`
+> and `oracle_datasource_query_duration` (seconds), labelled
+> `{datasource=DS uid, mode=sql|prometheus}` (report §18 F11). They are
+> registered on `prometheus.DefaultRegisterer`, so the SDK diagnostics server
+> serves them via the `CollectMetrics` RPC and Grafana exposes them at
+> **`/metrics/plugins/emreatayy-oracle-datasource`** — verified live on the
+> 12.4 and 13.1 matrix Grafanas after a panel query. The query path logs at the
+> right level (`Debug` executed / `Warn` client rejection / `Error` failure) and
+> **never logs SQL, values or credentials** — every message is
+> password-redacted; `TestLogHygiene` pins this down. §15 audit re-confirmed
+> secureJsonData secrets, variable escaping, the read-only guard, the command
+> allowlist, and the SSRF-safe Prom URL. See the [Metrics](#metrics) section.
+
+---
+
+## Metrics
+
+The plugin exposes three self-metrics to Grafana (report §18 F11), labelled by
+**datasource UID** and **query mode** (`sql` | `prometheus`):
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `oracle_datasource_query_total` | counter | Queries executed |
+| `oracle_datasource_errors_total` | counter | Queries that failed |
+| `oracle_datasource_query_duration` | histogram (s) | Query duration |
+
+They are registered on `prometheus.DefaultRegisterer`; the Grafana SDK's
+diagnostics server serves them through the `CollectMetrics` RPC and Grafana
+exposes them at the per-plugin endpoint `/metrics/plugins/emreatayy-oracle-datasource`
+(plugin series are not merged into the main `/metrics`). Verify with:
+
+```sh
+curl -s http://<grafana>/metrics/plugins/emreatayy-oracle-datasource | grep oracle_datasource
+```
+
+Metric labels and help text never contain values or passwords (§15).
 
 ---
 
@@ -426,14 +465,15 @@ Verify the built plugin against a running matrix Grafana (plugin load, health
 
 ## Roadmap
 
-16 implementation phases in 4 waves (~52–54 person-days). **F15 is done**
+16 implementation phases in 4 waves (~52–54 person-days). **F11 is done**
 (scaffold + Oracle connection core + typed type mapping & frame generation +
 backend macro & variable engine + SQL query editor + basic alerting + the
 Prometheus proxy backend + the PromQL editor & metric browser + Grafana query
 variables + **annotations** + **editor autocomplete** + **health JSON detail**
-+ **ORA error resolution** + **command execution**: pooled connection, session
-timezone pinning, ctx-cancelled queries, read-only guard, ORA error parsing,
-typed NUMBER/DATE/CLOB/NULL fields, wide/long time series, `largeNumberMode`,
++ **ORA error resolution** + **command execution** + **security audit, log
+hygiene & self-metrics**: pooled connection, session timezone pinning,
+ctx-cancelled queries, read-only guard, ORA error parsing, typed
+NUMBER/DATE/CLOB/NULL fields, wide/long time series, `largeNumberMode`,
 `$__timeFilter`/`$__unixEpochGroup`/`${var:csv}` interpolation with fail-closed
 guards, mode-tab query editor with Oracle + PromQL monarch languages, float64
 time-series value columns + scalar-`COUNT(*)` "rows > 0" alert rules, a
@@ -445,12 +485,16 @@ annotations marked with `DataTopic.Annotations` on the query frame, a TTL-cached
 metadata resource (`ALL_TAB_COMMENTS` + `ALL_TAB_COLUMNS`) feeding SQL-editor
 table/column completion and the time-column dropdown, a structured health
 `{oracle,prometheus}.ok` JSON with a 27-code ORA error map (bad password / URL /
-connection + query errors, all credential-redacted), and a "Run command" button
+connection + query errors, all credential-redacted), a "Run command" button
 that executes allowlisted one-shot scheduler/procedure commands through the
 backend `command` resource (confirm-gated, audit-logged, `commandTimeoutSec`
-bound, `SELECT … FROM DUAL` values rendered inline) — all verified on Grafana
-12.4 + 13.1, the alert rules and the proxy against a real Prometheus 3.5.0).
-The critical path going forward is **F11** (security, log hygiene, self-metrics).
+bound, `SELECT … FROM DUAL` values rendered inline), and the F11 self-metrics
+(`oracle_datasource_query_total`/`errors_total`/`query_duration`, labelled by
+DS uid + mode, exposed through Grafana's `/metrics`) with a §15 log-hygiene
+audit (no SQL, values or passwords in logs) — all verified on Grafana 12.4 +
+13.1, the alert rules and the proxy against a real Prometheus 3.5.0).
+The critical path going forward is **F12** (performance, limits, streaming,
+caching).
 
 | Wave | Phases | Scope | Effort |
 |---|---|---|---|
@@ -459,10 +503,9 @@ The critical path going forward is **F11** (security, log hygiene, self-metrics)
 | **C — Data & UX** | F8–F10, F15 | Variables, annotations + autocomplete, health/error UX, command execution UI | ~12 pg |
 | **D — Maturity & Release** | F11–F14 | Security/self-metrics, performance/limits, docs + packaging + e2e, ops/optional | ~12–14 pg |
 
-**F15 (command execution UI)** was the last Wave C phase — the feature that
-makes the plugin operationally useful (scheduler job control, procedure calls);
-it is **done** (see Status). Full phase-by-phase detail with acceptance
-criteria: report §18.
+**F15 (command execution UI)** was the last Wave C phase and **F11 (security,
+log hygiene, self-metrics)** is the first Wave D phase to land — both **done**
+(see Status). Full phase-by-phase detail with acceptance criteria: report §18.
 
 ---
 

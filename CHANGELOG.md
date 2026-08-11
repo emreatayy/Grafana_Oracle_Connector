@@ -356,6 +356,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/command.spec.ts` on **12.4 + 13.1** (value rendered inline through the
   dialog; DDL surfaces the inline rejection), full e2e suite 16/16 on 13.1,
   plugin check 6/6 on 12.4 + 13.1.
+- **F11 — Security, log hygiene, self-metrics** (report §15 + §18): the plugin
+  now exports a small **Prometheus metric set** — `oracle_datasource_query_total`,
+  `oracle_datasource_errors_total` and `oracle_datasource_query_duration`
+  (seconds) — labelled `{datasource=DS uid, mode=sql|prometheus}` and registered
+  on `prometheus.DefaultRegisterer`, so the SDK diagnostics server (which
+  gathers `prometheus.DefaultGatherer`) serves them through the `CollectMetrics`
+  RPC and Grafana exposes them at **`GET /metrics/plugins/emreatayy-oracle-datasource`**
+  (the per-plugin endpoint — plugin series are not merged into the main
+  `/metrics`). A `queryRecorder` wired into the single `query()` path counts,
+  times and error-tags every SQL/Prometheus/annotation query, with the UID
+  plumbed from the request `PluginContext`. The **query path now logs at the right level**:
+  `Debug` on execution (datasource/mode/refId only), `Warn` on client rejections
+  (read-only guard, interpolation, disabled proxy), `Error` on real failures —
+  every message password-redacted and free of SQL, values and credentials
+  (§15 log-hygiene rule). §15 audit re-confirmed: `secureJsonData` credentials,
+  F3 variable escaping, the ADR-7 guard, the F15 allowlist + confirm + audit,
+  and the SSRF-safe Prom URL. Verified: `TestQueryRecorder`,
+  `TestQueryData_MetricsLabels` (UID → label plumbing),
+  `TestMetrics_RegisteredOnDefaultGatherer`,
+  `TestLogHygiene` (rejection/failure logs never contain the SQL or password)
+  and `TestIntegration_QueryMetrics` on Oracle 21c; the series are visible on
+  `GET /metrics` of the 12.4 and 13.1 matrix Grafanas after a panel query; lint
+  0 issues.
 
 ### Fixed
 
