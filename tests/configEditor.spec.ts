@@ -20,6 +20,43 @@ test('smoke: should render config editor', async ({ createDataSourceConfigPage, 
   await expect(page.getByLabel('Password')).toBeVisible();
 });
 
+test('F14: custom CA TLS mode reveals the CA certificate input', async ({
+  createDataSourceConfigPage,
+  readProvisionedDataSource,
+  page,
+}) => {
+  const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
+  await createDataSourceConfigPage({ type: ds.type });
+
+  const tlsMode = page.getByRole('combobox', { name: 'TLS mode' });
+  await expect(tlsMode).toHaveValue('');
+  await expect(page.getByLabel('CA certificate')).toBeHidden();
+
+  await tlsMode.click();
+  await page.getByText('SSL, verify custom CA', { exact: true }).click();
+
+  const caCertificate = page.getByLabel('CA certificate');
+  await expect(caCertificate).toBeVisible();
+  await caCertificate.fill('-----BEGIN CERTIFICATE-----\ntest-ca\n-----END CERTIFICATE-----');
+  await expect(caCertificate).toHaveValue(/test-ca/);
+});
+
+test('F14: TNS descriptor and column-unit mappings can be entered', async ({
+  createDataSourceConfigPage,
+  readProvisionedDataSource,
+  page,
+}) => {
+  const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
+  await createDataSourceConfigPage({ type: ds.type });
+
+  const descriptor = '(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oracle.example)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=ORCLPDB1)))';
+  await page.getByLabel('Host').fill(descriptor);
+  await page.getByLabel('Column units').fill('LOAD=percent\nMEMORY_BYTES=decbytes');
+
+  await expect(page.getByLabel('Host')).toHaveValue(descriptor);
+  await expect(page.getByLabel('Column units')).toHaveValue('LOAD=percent\nMEMORY_BYTES=decbytes');
+});
+
 test('"Save & test" should be successful when the database is reachable', async ({
   createDataSourceConfigPage,
   readProvisionedDataSource,

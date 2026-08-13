@@ -436,6 +436,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   suite **16/16** on Oracle 21c XE (report §21 row 18). Verified:
   `TestIntegration_DashboardExamples`, `mage archive` + `mage validate`
   (0 errors), archive layout + `0755` permission check.
+- **F14 — Ops/optional** (report §18 F14): the optional operational surface,
+  all items clearly marked and verified. **(a) Column→unit formatting** —
+  a Formatting datasource field maps Oracle columns to Grafana display units
+  (`LOAD=percent`, one per line or comma-separated; `models.ParseColumnUnits`
+  case-insensitive), applied server-side as `FieldConfig.Unit`
+  (`convert.applyColumnUnits`) so axes/tooltips/panels render the unit with no
+  frontend per-column work. Verified: `TestParseColumnUnits`,
+  `TestBuildFrame_ColumnUnits`, `TestIntegration_ColumnUnits` (real Oracle:
+  `LOAD`→`percent`, `REGION`→`string`). **(b) Oracle TLS (TCPS) connections**
+  — config-editor TLS mode (`None` / `SSL, skip certificate verify` /
+  `SSL, verify custom CA`) realized via go-ora's `OracleConnector.WithTLSConfig`
+  (a void method; the `driver.Connector` from `NewConnector` is type-asserted).
+  `skip-verify` is an explicitly opted-in operator choice (never the default);
+  `custom-ca` layers a configured PEM CA on top of the system roots, and a wrong
+  / unparsable bundle is a **hard error at datasource construction** — the
+  plugin refuses to start rather than silently downgrading to plaintext.
+  Verified: `TestBuildTLSConfig`, `TestNewDatasource_TLSFailClosed`,
+  `TestNewDatasource_TLSCustomCA`. No Oracle Wallet is required. **(c) TNS
+  connect-descriptor host pass-through** — the Host field accepts a full
+  `(DESCRIPTION=…)` descriptor, passed to go-ora via its **lowercase
+  `?connStr=`** query option (the DSN is built manually because `BuildUrl`
+  emits option keys verbatim and `ParseConfig` reads only the lowercase key);
+  Port/Service/SID are then ignored and `tnsnames.ora` is not consulted.
+  Verified: `TestBuildDSN_DescriptorHost` round-trips the DSN through
+  `go_ora.ParseConfig` (descriptor address + service, no connection needed).
+  **(d) Prometheus `ALERTS` Layer-3 view** — the proxy passes the Prometheus
+  HTTP API through as-is, so Prometheus' own alert state is queryable verbatim:
+  `ALERTS{alertstate="firing"}` returns one wide frame per firing alert carrying
+  the alert labels (group with `max by (alertname)`); a reference rule
+  (`devenv/rules.yml`, `OracleExporterDown` on `up{job="oracle_exporter"}==0`)
+  is loaded by the dev Prometheus and reaches **firing** ~1 min after start — a
+  live, self-contained demo. **(e) Option D (exporter orchestration/health) is
+  explicitly optional — not implemented**, with the `up==0` alert covering the
+  exporter-down case. Installation guide §3.5 (Formatting), §3.6 (TLS) and
+  §5.1 (Layer 3) document the new surfaces; report §21 row 19. Full integration
+  suite **17/17** on Oracle 21c XE, unit + lint, frontend build, plugin check
+  6/6 on Grafana 12.4 + 13.1, and the full e2e suite green.
 
 ### Fixed
 

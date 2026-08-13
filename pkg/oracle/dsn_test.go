@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	go_ora "github.com/sijms/go-ora/v2"
+
 	"github.com/emreatayy/oracle-datasource/pkg/models"
 )
 
@@ -101,5 +103,53 @@ func TestBuildDSN_Validation(t *testing.T) {
 				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildDSN_DescriptorHost(t *testing.T) {
+	// A full TNS connect descriptor in the host field (report §16) is passed
+	// through go-ora's CONNSTR parameter: no port/service/SID is required and
+	// the address list comes from the descriptor itself.
+	desc := "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=db.example.com)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=XEPDB1)))"
+	s := settings()
+	s.Hostname = desc
+	s.Service = ""
+	s.SID = ""
+
+	dsn, err := BuildDSN(s)
+	if err != nil {
+		t.Fatalf("BuildDSN: %v", err)
+	}
+	if !strings.HasPrefix(dsn, "oracle://SYSTEM:p@ss%2Fword@:1521/?") {
+		t.Errorf("dsn = %q, want empty-host placeholder + query options", dsn)
+	}
+	if !strings.Contains(dsn, "connStr=") {
+		t.Errorf("dsn = %q, want a connStr option carrying the descriptor", dsn)
+	}
+
+	// ParseConfig must turn the DSN back into the descriptor's address and
+	// service, proving go-ora accepts the built string without connecting.
+	cfg, err := go_ora.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if len(cfg.Servers) != 1 {
+		t.Fatalf("servers = %+v, want exactly the descriptor's address", cfg.Servers)
+	}
+	if cfg.Servers[0].Addr != "db.example.com" || cfg.Servers[0].Port != 1521 {
+		t.Errorf("server = %+v, want db.example.com:1521 from the descriptor", cfg.Servers[0])
+	}
+	if cfg.ServiceName != "XEPDB1" {
+		t.Errorf("ServiceName = %q, want XEPDB1 from CONNECT_DATA", cfg.ServiceName)
+	}
+}
+
+func TestBuildDSN_DescriptorValidation(t *testing.T) {
+	// Descriptor mode still requires a user and password.
+	s := settings()
+	s.Hostname = "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=db)(PORT=1521)))"
+	s.User = ""
+	if _, err := BuildDSN(s); err == nil {
+		t.Fatal("descriptor mode without a user: expected error, got nil")
 	}
 }

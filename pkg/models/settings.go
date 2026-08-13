@@ -19,6 +19,7 @@ const (
 	DefaultMaxRows            = 100000
 	DefaultMaxSeries          = 1000
 	DefaultSessionTimeZone    = "UTC"
+	DefaultPort               = 1521 // placeholder for TNS descriptor DSNs (report §16)
 
 	// DSNConnectTimeoutSec is the go-ora "CONNECTION TIMEOUT" backstop for a
 	// single connect attempt (config.SessionInfo.ConnectTimeout). The health
@@ -35,6 +36,15 @@ type OracleSettings struct {
 	Service            string `json:"o_service"`
 	SID                string `json:"o_sid"`
 	User               string `json:"o_user"`
+	// TLSMode selects the Oracle server TLS behavior (report §16): "" = plain
+	// connection (the default, unchanged behaviour), "skip-verify" = TLS
+	// without certificate validation (operator opt-in), "custom-ca" = TLS where
+	// the server is verified against the TLSCAPEM bundle.
+	TLSMode string `json:"tlsMode"`
+	// TLSCAPEM holds a PEM bundle used to verify the Oracle server when TLSMode
+	// is "custom-ca". It is a public certificate, not a credential, so it lives
+	// in jsonData — never in secureJsonData.
+	TLSCAPEM string `json:"tlsCaPem"`
 	MaxOpenConns       int    `json:"maxOpenConns"`
 	MaxIdleConns       int    `json:"maxIdleConns"`
 	ConnMaxLifetimeSec int    `json:"connMaxLifetimeSec"`
@@ -47,6 +57,12 @@ type OracleSettings struct {
 	// precision>15): "" = per-format default (string in table, float in
 	// time_series), "string", or "float".
 	LargeNumberMode string `json:"largeNumberMode"`
+	// ColumnUnits is the column→Grafana-unit mapping (report §16) as a
+	// "NAME=unit" list; entries are separated by commas or newlines and the
+	// column name is matched case-insensitively (Oracle returns uppercase
+	// unquoted names). ParseColumnUnits turns it into a lookup map applied as
+	// data.FieldConfig.Unit by the frame builder. Blank means no unit mapping.
+	ColumnUnits string `json:"columnUnits"`
 	// NumericVariables lists dashboard variable names that may expand unquoted
 	// in SQL (report §8.2). It is a hint, not a trust grant: the backend still
 	// requires the value to match a strict numeric literal before emitting it
@@ -72,6 +88,35 @@ func (s *OracleSettings) NumericVariableSet() map[string]bool {
 		}
 	}
 	return set
+}
+
+// ParseColumnUnits turns the columnUnits text ("NAME=unit", comma- or
+// newline-separated) into a map keyed by the column name in UPPERCASE so it can
+// be matched against Oracle's unquoted identifier case. A blank or all-empty
+// input returns nil. Entries without '=' are skipped; surrounding whitespace is
+// trimmed from both sides.
+func ParseColumnUnits(s string) map[string]string {
+	fields := strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == '\n' || r == '\r' })
+	if len(fields) == 0 {
+		return nil
+	}
+	m := make(map[string]string, len(fields))
+	for _, f := range fields {
+		name, unit, ok := strings.Cut(f, "=")
+		if !ok {
+			continue
+		}
+		name = strings.ToUpper(strings.TrimSpace(name))
+		unit = strings.TrimSpace(unit)
+		if name == "" || unit == "" {
+			continue
+		}
+		m[name] = unit
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
 
 // SecretPluginSettings holds decrypted secure fields (never sent to the

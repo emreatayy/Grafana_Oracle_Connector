@@ -18,12 +18,15 @@ const defaultMaxSeries = 1000
 // format; TimeColumn optionally pins the time column by name; MaxSeries is the
 // ADR-11 cardinality guard (0 → defaultMaxSeries); LargeNumbers is the
 // datasource largeNumberMode setting ("" = ADR-8 per-format default);
+// ColumnUnits maps column names (uppercase, from ParseColumnUnits) to Grafana
+// display units applied as data.FieldConfig.Unit (report §16);
 // ExecutedQueryString is the raw SQL before interpolation (report §7.5).
 type Options struct {
 	Format              string
 	TimeColumn          string
 	MaxSeries           int
 	LargeNumbers        string
+	ColumnUnits         map[string]string
 	ExecutedQueryString string
 }
 
@@ -66,6 +69,10 @@ func BuildFrame(cols []ColumnInfo, rows [][]any, opt Options) (*data.Frame, erro
 		return nil, err
 	}
 
+	if len(opt.ColumnUnits) > 0 {
+		applyColumnUnits(frame, opt.ColumnUnits)
+	}
+
 	if opt.ExecutedQueryString != "" {
 		if frame.Meta == nil {
 			frame.Meta = &data.FrameMeta{}
@@ -73,6 +80,24 @@ func BuildFrame(cols []ColumnInfo, rows [][]any, opt Options) (*data.Frame, erro
 		frame.Meta.ExecutedQueryString = opt.ExecutedQueryString
 	}
 	return frame, nil
+}
+
+// applyColumnUnits sets data.FieldConfig.Unit on every frame field whose name
+// appears in units (report §16). Keys are uppercase, matching Oracle's
+// unquoted identifier case; deduped names ("… (2)") only match when the whole
+// name has an explicit mapping. Fields without a mapping keep their default
+// (no Config), so Grafana renders plain values.
+func applyColumnUnits(frame *data.Frame, units map[string]string) {
+	for _, f := range frame.Fields {
+		unit, ok := units[strings.ToUpper(f.Name)]
+		if !ok {
+			continue
+		}
+		if f.Config == nil {
+			f.Config = &data.FieldConfig{}
+		}
+		f.Config.Unit = unit
+	}
 }
 
 // classifyAll classifies every column under one large-number mode.

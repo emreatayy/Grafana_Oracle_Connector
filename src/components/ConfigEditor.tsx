@@ -1,5 +1,5 @@
 import React, { ChangeEvent } from 'react';
-import { FieldSet, InlineField, Input, SecretInput, Select, Switch } from '@grafana/ui';
+import { FieldSet, InlineField, Input, SecretInput, Select, Switch, TextArea } from '@grafana/ui';
 import { DataSourcePluginOptionsEditorProps, SelectableValue } from '@grafana/data';
 import {
   LargeNumberMode,
@@ -32,6 +32,13 @@ const PROM_AUTH_OPTIONS: Array<SelectableValue<PromAuthType>> = [
   { label: 'None', value: 'none' },
   { label: 'Basic auth', value: 'basic' },
   { label: 'Bearer token', value: 'token' },
+];
+
+// Oracle server TLS (report §16, F14). Empty is the default plain connection.
+const TLS_MODE_OPTIONS: Array<SelectableValue<'' | 'skip-verify' | 'custom-ca'>> = [
+  { label: 'None (plain connection)', value: '' },
+  { label: 'SSL, skip certificate verify', value: 'skip-verify' },
+  { label: 'SSL, verify custom CA', value: 'custom-ca' },
 ];
 
 export function ConfigEditor(props: Props) {
@@ -146,6 +153,39 @@ export function ConfigEditor(props: Props) {
             onChange={onSecretChange('o_password')}
           />
         </InlineField>
+      </FieldSet>
+
+      <FieldSet label="Connection security">
+        <InlineField
+          label="TLS mode"
+          labelWidth={24}
+          interactive
+          tooltip="How the Oracle server certificate is handled (report §16). None keeps the plain connection; 'SSL, skip certificate verify' encrypts without validating (operator opt-in for self-signed racks); 'SSL, verify custom CA' pins the server to the CA bundle below. Requires Oracle TLS (TCPS) listeners."
+        >
+          <Select<'' | 'skip-verify' | 'custom-ca'>
+            inputId="config-editor-tls-mode"
+            options={TLS_MODE_OPTIONS}
+            value={jsonData.tlsMode ?? ''}
+            onChange={(v) => update('tlsMode', v.value ?? '')}
+            width={50}
+          />
+        </InlineField>
+        {jsonData.tlsMode === 'custom-ca' && (
+          <InlineField
+            label="CA certificate"
+            labelWidth={24}
+            interactive
+            tooltip="PEM bundle used to verify the Oracle server when TLS mode is 'SSL, verify custom CA'. A public certificate, so it is stored in jsonData — never a credential."
+          >
+            <TextArea
+              id="config-editor-tls-ca"
+              value={jsonData.tlsCaPem ?? ''}
+              onChange={(e) => update('tlsCaPem', e.currentTarget.value)}
+              placeholder={'-----BEGIN CERTIFICATE-----\n…'}
+              rows={5}
+            />
+          </InlineField>
+        )}
       </FieldSet>
 
       <FieldSet label="Prometheus">
@@ -267,6 +307,23 @@ export function ConfigEditor(props: Props) {
             id="config-editor-command-confirm"
             value={jsonData.confirmCommand ?? true}
             onChange={(e) => update('confirmCommand', e.currentTarget.checked)}
+          />
+        </InlineField>
+      </FieldSet>
+
+      <FieldSet label="Formatting">
+        <InlineField
+          label="Column units"
+          labelWidth={24}
+          interactive
+          tooltip="Map Oracle columns to Grafana display units (report §16), one 'NAME=unit' per line or comma-separated, e.g. 'LOAD=percent' or 'MEM_GB=decbytes'. Column names match case-insensitively. Applied server-side as FieldConfig.Unit."
+        >
+          <TextArea
+            id="config-editor-column-units"
+            value={jsonData.columnUnits ?? ''}
+            onChange={(e) => update('columnUnits', e.currentTarget.value)}
+            placeholder="LOAD=percent&#10;MEMORY_BYTES=decbytes"
+            rows={4}
           />
         </InlineField>
       </FieldSet>

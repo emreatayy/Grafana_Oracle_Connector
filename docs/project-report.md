@@ -1107,6 +1107,50 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 **F14 — Ops/optional** · 3–5 pg
 - TLS/Wallet options, TNS names; Alertmanager `ALERTS` view (Layer 3); (opt.) exporter orchestration/health (Option D); column→unit automation.
 - **DoD:** All user stories (Section 3.2 of v1) covered; options clearly marked.
+- **✅ Done (2026-08-12):** the optional ops surface is complete and every
+  option is clearly marked; details and numbers in §21 row 19. **(a) TLS
+  connections** — `pkg/oracle/tls.go` (`BuildTLSConfig`) maps the config-editor
+  choice to go-ora's `OracleConnector.WithTLSConfig` (a `void` method, so the
+  `driver.Connector` from `NewConnector` is type-asserted): mode `skip-verify`
+  yields `&tls.Config{InsecureSkipVerify:true}` (a coder-injected `// #nosec
+  G402` marks it as an explicitly opted-in operator choice, never the default);
+  mode `custom-ca` builds a pool from `SystemCertPool` + the configured PEM CA
+  (layered on top of the system roots). A wrong or unparsable CA bundle is a
+  **hard construction error** — the datasource refuses to start rather than
+  silently downgrading to plaintext (`TestBuildTLSConfig` covers disabled /
+  skip-verify / custom-CA-with-handshake / bad-pool rejection; TLS mode that
+  is not one of the three → error). Editable in the datasource Config (TLS mode
+  + CA textarea). `TestNewDatasource_TLSFailClosed` proves the fail-closed path.
+  **(b) TNS connect descriptors** — the **Host** field now also accepts a full
+  `(DESCRIPTION=…)` string (report §16/F14): it is passed to go-ora through the
+  **lowercase `?connStr=`** query option (go-ora's `ParseConfig` reads
+  `q.Get("connStr")`, whereas `BuildUrl` emits option keys verbatim — so the
+  descriptor DSN is built manually with a placeholder host/port and the
+  lowercase key; documented in `pkg/oracle/dsn.go`). Port/Service/SID are then
+  ignored and `tnsnames.ora` is **not** consulted — the descriptor's own
+  `ADDRESS`/`CONNECT_DATA` resolve the server + service (`TestBuildDSN_DescriptorHost`
+  round-trips the built DSN through `go_ora.ParseConfig`, asserting the
+  descriptor's address and service, and needs no connection; a descriptor
+  without a user/password still fails validation). **(c) Layer 3 — Prometheus
+  `ALERTS` view** — because the plugin proxies the Prometheus HTTP API as-is,
+  Prometheus' own alert state is queryable verbatim (`ALERTS{alertstate="firing"}`
+  → one wide frame per firing alert with the alert labels on the field; group
+  with `max by (alertname)`). A reference rule ships in the dev environment
+  (`devenv/rules.yml` → `OracleExporterDown` on `up{job="oracle_exporter"}==0`,
+  severity critical, loaded via `rule_files` in `devenv/prometheus.yml`), so the
+  Layer-3 signal is **live end-to-end: firing** against the running Prometheus
+  (~1 min after start). **(d) Column→unit automation** — a Formatting field maps
+  Oracle columns to Grafana display units (`LOAD=percent`, one per line/comma;
+  `models.ParseColumnUnits`), applied server-side as `FieldConfig.Unit`
+  (`convert.applyColumnUnits`), case-insensitive keys; `TestIntegration_ColumnUnits`
+  asserts `percent`/`string` units on a real Oracle. **(e) Option D (exporter
+  orchestration/health) is explicitly marked optional — not implemented** — the
+  plugin's job ends at *querying* the exporter's metrics; running/health-probing
+  it belongs to the orchestration layer, and the `up==0 → OracleExporterDown`
+  rule covers the "exporter is down" case regardless. Full integration suite
+  (17) green, unit + lint, frontend build, plugin check 6/6 on 12.4 + 13.1, and
+  the full e2e suite all green. Installation guide §3.5 (Formatting) / §3.6
+  (TLS) / §5.1 (Layer 3) document the new surfaces.
 
 ### Summary
 
@@ -1134,7 +1178,7 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 | Grafana SDK/frontend package breakage | Pinning + CI matrix (12.4/13.1) + e2e dogfooding |
 | Oracle container weight (CI) | Unit in CI, integration on schedule (15/16) |
 | `alerting: true` flag behavior varies by version | Declare both flags (ADR-12) + empirical verification in F0 |
-| Multi-instance / TNS / Wallet complexity | Planned for F14; single-connection pattern first |
+| Multi-instance / TNS / Wallet complexity | **Resolved (F14):** single-connection pattern remains; TNS connect descriptors (`?connStr=`) and Oracle TLS (TCPS) with skip-verify / custom-CA — no Oracle Wallet needed — are implemented and tested (§18 F14) |
 | Alert noise | Threshold/again-interval example templates (F13) |
 | go-ora LOB "streaming" limited | Inline reads for large CLOB; streaming need measured in F12 |
 | `maxRows` cannot inject LIMIT into arbitrary SQL | Stop reading rows at N (F12); optional `ROWNUM` wrap documented |
@@ -1156,7 +1200,7 @@ Effort is in person-days (pg) for 1 developer. Dependencies and critical path: *
 
 ## 21. Assumptions to Verify and Open Decisions
 
-Empirical checks run **2026-08-07 → 2026-08-11** against a live Oracle 21c XE (go-ora v2.9.0), Grafana 12.4/13.1, and the F0-built plugin. **18 of 18 resolved.**
+Empirical checks run **2026-08-07 → 2026-08-12** against a live Oracle 21c XE (go-ora v2.9.0), Grafana 12.4/13.1, and the F0-built plugin. **19 of 19 resolved.**
 
 | # | Check | Affects |
 |---|---|---|
@@ -1180,6 +1224,8 @@ Empirical checks run **2026-08-07 → 2026-08-11** against a live Oracle 21c XE 
 | 16 | **✅ Verified (2026-08-11, F11 end-to-end on Oracle 21c XE + Grafana 12.4.0 :3001 + 13.1.0 :3002):** the **self-metrics** DoD is proven at the real seam — after a panel query on each Grafana, **`GET /metrics/plugins/emreatayy-oracle-datasource`** (Grafana's per-plugin endpoint, `pluginMetricsEndpoint`, backed by the `CollectMetrics` RPC) returns `oracle_datasource_query_total{datasource="P7F605F7554A4A003",mode="sql"}=1`, the `oracle_datasource_query_duration` histogram (1 sample), and — after a guard-rejected DML POST — `oracle_datasource_errors_total{…,mode="sql"}=1`; the label value is the real datasource UID and no series ever lands in the main `/metrics` (the dedicated plugin endpoint is where Grafana serves backend-plugin metrics). **Log hygiene** DoD proven by `TestLogHygiene`: the guard-rejection `Warn` and failure `Error` entries carry the redacted error but **never** the SQL text or the configured password, and the execution `Debug` entry carries only `datasource`/`mode`/`refId`; the API-level probe of the same DML rejection returns "read-only guard: \"DELETE\" is not allowed…" with no SQL body or credentials. A full `grep` of the backend confirms the only logged strings are identifiers and `safeMessage`-shaped messages. **§15 audit** re-confirms secureJsonData credentials, F3 variable escaping, the ADR-7 read-only guard, the F15 allowlist + confirm + audit, and the F6 SSRF-safe Prom URL. `TestQueryRecorder`, `TestQueryData_MetricsLabels` (UID from `PluginContext` reaches `{datasource, mode}` labels), `TestMetrics_RegisteredOnDefaultGatherer`, `TestLogHygiene` and `TestIntegration_QueryMetrics` (real SELECT → 1 `sql`-mode count, 0 errors, 1 duration sample) green; full integration suite ×2 stable; lint 0 issues | 15 / F11 |
 | 17 | **✅ Verified (2026-08-11, F12 measured on Oracle 21c XE, `TestIntegration_MaxRows` + `TestIntegration_PoolUnderLoad` + `TestIntegration_CancelLongQuery` + `TestReadResponseBody`):** the §18 F12 DoD — "100k+ rows, cancellation, and pool behavior under load **measured**" — is proven with real numbers, not assumptions. (a) **100k+ rows:** `SELECT LEVEL … CONNECT BY LEVEL <= 120000` with `maxRows=100000` is **stopped at 100000 rows in ~55 ms**; the frame carries the `maxRows` **truncation `DataNotice`** (severity warning) and `oracle_datasource_queries_truncated_total{mx-uid,sql}` bumps to 1 while `rows_scanned_total` = 100500 (control 500 + capped 100000); a 500-row control query truncates nothing. (b) **cancellation:** a heavy `SELECT COUNT(*) … CONNECT BY LEVEL <= 1000000000` with a 300 ms context returns **ORA-01013 in ~311 ms** — cancellation stops the work (error, never a partial frame), and the whole heavy path stays well inside the 30 s query timeout. (c) **pool under load:** 20 concurrent queries over the 5-connection pool complete in **~365 ms** with the **sampled peak open connections never exceeding 5** (`MaxOpenConns` cap honored — sql.DB queues the overflow: `WaitCount=15`, `WaitDuration≈2.4 s`) and the pool **drains to `Idle=1`** after the load (`db.Stats()` final: `OpenConnections:1 Idle:1`); `Stats().MaxOpenConnections=5` confirms the settings→pool wiring. The pool parameters are now applied by the integration helper exactly as production `NewDatasource` does, so the whole suite exercises real pool behaviour. (d) **Prometheus response size:** the 64 MiB cap (`readResponseBody`) returns a readable "response exceeds the size limit" error instead of a truncated-JSON parse failure — unit-tested at small limits. Full integration suite 15/15, unit + lint 0 issues, ×2 stable | 18 F12 / §5.1 / §9.5 |
 | 18 | **✅ Verified (2026-08-11, F13 examples + packaging on Oracle 21c XE + both Grafana lines):** the §18 F13 DoD — "release-ready package; every example in the docs works" — is proven end-to-end. (a) **every example works:** `TestIntegration_DashboardExamples` runs the two SQL panels of `examples/dashboard/oracle-overview.json` through the production query path on a real Oracle. The synthetic-load panel (`CONNECT BY … 96` with `$__timeFilter(ts)`, `format: time_series`) returns a **wide** frame (`FrameTypeTimeSeriesWide` — applicable because the query has **no dimension column**, §7.3 rule 4) of **96 rows**: nullable `TS` time field + nullable `LOAD` float64 field whose values are a strict 1..96 saw-tooth; the `user_tables` panel (`SELECT * FROM (… ORDER BY table_name) WHERE ROWNUM <= 20`, `format: table`) returns **≤ 20 rows** with `TABLE_NAME` (nullable string), `NUM_ROWS` (nullable **float64** — `user_tables.num_rows` is a precision-unconstrained bare `NUMBER`, which §6.2 classifies as float, not a >15-digit large number) and `LAST_ANALYZED` (nullable time, NULLs preserved). (b) **release-ready packaging:** `mage archive` produces `dist/emreatayy-oracle-datasource-1.0.0.zip` + `.tar.gz`, each a single top-level `emreatayy-oracle-datasource/` directory with `plugin.json` at its root, backend binaries `0755`, LICENSE/README/img present (unzip-verified on a fresh copy); `mage validate` runs `@grafana/plugin-validator` against the archive with **zero errors** — the 10 remaining warnings are all publish-flow (private-repo 404s clear when the repo goes public, `unsigned` clears at sign time, screenshots/account/sponsorship are catalog items). (c) **signing + release automation:** `npm run sign` (`@grafana/sign-plugin`, `GRAFANA_ACCESS_POLICY_TOKEN`, `--signatureType private|public` / `--rootUrls`) signs `dist/` **in place before** `mage archive` so `MANIFEST.txt` ships inside the archives; `.github/workflows/release.yml` (created) runs build → sign-if-token → archive → validate → GitHub Release on a `v*` tag or manual dispatch and **degrades gracefully** (warning + unsigned publish) when no signing token exists. Full integration suite **16/16** green, plugin check **6/6** on Grafana 12.4.0 + 13.1.0, and the full Playwright e2e suite **15/15** on 13.1.0 (~32 s) | 18 F13 / docs §2–§5 |
+
+| 19 | **✅ Verified (2026-08-12, F14 end-to-end on Oracle 21c XE + Grafana 12.4.0 :3001 + 13.1.0 :3002 + Prometheus 3.5.0):** (a) **TLS** — `go_ora.OracleConnector.WithTLSConfig` is a *void* method, so `NewConnector`'s `driver.Connector` is type-asserted before the TLS config is attached; `skip-verify` = `InsecureSkipVerify` (explicit opt-in), `custom-ca` = `SystemCertPool` + configured PEM bundle, and a bad/unparsable bundle fails **datasource construction** (hard error, never a silent downgrade to plaintext). Unit-proven with a real TLS accept-loop server: handshake succeeds under custom-CA, and a wrong CA is refused. (b) **TNS descriptor** — a full `(DESCRIPTION=…)` in the Host field goes through go-ora's **lowercase `?connStr=`** option (the DSN is built manually because `BuildUrl` would emit `CONNSTR=` verbatim and `ParseConfig` reads only the lowercase key); `go_ora.ParseConfig` round-trips the built DSN back to the descriptor's address + service without connecting, and a descriptor without credentials still fails validation. (c) **Layer 3 `ALERTS`** — `devenv/rules.yml` ships `OracleExporterDown` (`up{job="oracle_exporter"}==0`, severity critical, loaded by `rule_files`); with no exporter running it reaches **`firing` ~1 min after Prometheus starts**, and a Prometheus-mode query `ALERTS{alertstate="firing"}` through the datasource returns the wide frame carrying the alert labels (`alertname=OracleExporterDown`, `severity=critical`, …) — a live, self-contained Layer-3 signal. (d) **column→unit** — `ParseColumnUnits` + `applyColumnUnits` set `FieldConfig.Unit` case-insensitively on a real Oracle (`TestIntegration_ColumnUnits`: `LOAD`→`percent`, `REGION`→`string`), so axes/tooltips/panels render the unit with no frontend per-column work. (e) **Option D** (exporter orchestration/health) is marked **optional — not implemented** in §18/§5.1: out of scope, with the `up==0` alert covering the exporter-down case. Full integration suite **17/17** green, unit + lint 0 issues, frontend typecheck/lint/build clean, plugin check **6/6** on both Grafana lines, full e2e suite green | 16 / F14 |
 
 - `sessionTimeZone` default: `UTC` (recommended) — DATE/TIMESTAMP conversion follows it.
 - `maxRows` default: `100_000` (recommended); `maxSeries`: `1000`.

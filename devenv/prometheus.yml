@@ -1,8 +1,13 @@
 # Minimal Prometheus config for the dev environment (report §17.1 / §9).
 # Scrapes the optional Oracle exporter (docker compose --profile prom up -d).
+# The oracle rules (devenv/rules.yml) fire when the exporter is unreachable,
+# giving the Layer-3 ALERTS view (report §16) a live signal to query.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+
+rule_files:
+  - rules.yml
 
 scrape_configs:
   - job_name: prometheus

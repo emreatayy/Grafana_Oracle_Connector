@@ -86,3 +86,32 @@ func TestLoadPluginSettings_InvalidJSON(t *testing.T) {
 		t.Fatal("expected error for invalid JSON, got nil")
 	}
 }
+
+func TestParseColumnUnits(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want map[string]string
+	}{
+		{name: "blank", in: "", want: nil},
+		{name: "comma separate", in: "LOAD=percent, MEM_BYTES=decbytes", want: map[string]string{"LOAD": "percent", "MEM_BYTES": "decbytes"}},
+		{name: "newline separate", in: "LOAD=percent\nMEM_BYTES=decbytes", want: map[string]string{"LOAD": "percent", "MEM_BYTES": "decbytes"}},
+		{name: "case insensitive key", in: "load=percent", want: map[string]string{"LOAD": "percent"}},
+		{name: "mixed whitespace", in: "  load = percent  ,\n  name=bytes  ", want: map[string]string{"LOAD": "percent", "NAME": "bytes"}},
+		{name: "malformed skipped", in: "LOAD=percent, plain, =x, NAME=, =", want: map[string]string{"LOAD": "percent"}},
+		{name: "only junk", in: "plain\n=,\nNOPE=", want: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseColumnUnits(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("ParseColumnUnits(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+			for k, v := range tc.want {
+				if got[k] != v {
+					t.Errorf("ParseColumnUnits(%q)[%q] = %q, want %q", tc.in, k, got[k], v)
+				}
+			}
+		})
+	}
+}

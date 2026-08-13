@@ -1,0 +1,19 @@
+# Reference Layer-3 alert rules (report §16, F14). The dev environment has no
+# oracle exporter running by default, so `up{job="oracle_exporter"} == 0` is
+# true and the alert fires ~1m after Prometheus starts — a live, self-contained
+# demonstration of the ALERTS view through the plugin's Prometheus proxy:
+#
+#   ALERTS{alertstate="firing"}
+#
+# Loaded via the rule_files entry in devenv/prometheus.yml.
+groups:
+  - name: oracle
+    rules:
+      - alert: OracleExporterDown
+        expr: up{job="oracle_exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Oracle exporter is down"
+          description: "The oracle_exporter target has been unreachable for over 1 minute; the Oracle database is now unobservable."

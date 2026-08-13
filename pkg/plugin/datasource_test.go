@@ -2,8 +2,14 @@ package plugin
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -807,4 +813,109 @@ func TestCallResource_ProxyError(t *testing.T) {
 	if strings.Contains(string(resp.Body), "s3cret-token-xyz") {
 		t.Errorf("body leaks the token: %s", resp.Body)
 	}
+}
+
+// TestNewDatasource_TLSFailClosed proves a misconfigured TLS policy fails
+// instance construction instead of silently connecting over plaintext (report
+// §16): NewDatasource surfaces the custom-ca error before any connect happens.
+func TestNewDatasource_TLSFailClosed(t *testing.T) {
+	source := backend.DataSourceInstanceSettings{
+		JSONData: []byte(`{
+			"o_hostname": "db.example.internal",
+			"o_port": 2484,
+			"o_service": "XEPDB1",
+			"o_user": "SYSTEM",
+			"tlsMode": "custom-ca",
+			"tlsCaPem": "this is not a PEM certificate"
+		}`),
+		DecryptedSecureJSONData: map[string]string{"o_password": "pw"},
+	}
+	if _, err := NewDatasource(context.Background(), source); err == nil {
+		t.Fatal("NewDatasource: expected an error for tlsCaPem with tlsMode custom-ca, got nil")
+	}
+}
+
+// TestNewDatasource_OKModes proves the plain (default) and skip-verify modes
+// construct fine. custom-ca is exercised with a real CA PEM in
+// TestNewDatasource_TLSCustomCA below, because it needs live verify material.
+func TestNewDatasource_OKModes(t *testing.T) {
+	for _, mode := range []string{`""`, `"skip-verify"`} {
+		source := backend.DataSourceInstanceSettings{
+			JSONData: []byte(`{
+				"o_hostname": "db.example.internal",
+				"o_port": 2484,
+				"o_service": "XEPDB1",
+				"o_user": "SYSTEM",
+				"tlsMode": ` + mode + `
+			}`),
+			DecryptedSecureJSONData: map[string]string{"o_password": "pw"},
+		}
+		inst, err := NewDatasource(context.Background(), source)
+		if err != nil {
+			t.Fatalf("NewDatasource(tlsMode %s): %v", mode, err)
+		}
+		if ds, ok := inst.(*Datasource); !ok || ds.db == nil {
+			t.Fatalf("tlsMode %s: expected a datasource with a pool, got %T", mode, inst)
+		} else {
+			ds.Dispose()
+		}
+	}
+}
+
+// TestNewDatasource_TLSCustomCA proves a valid CA bundle is accepted and wired
+// without a connect.
+func TestNewDatasource_TLSCustomCA(t *testing.T) {
+	caPEM, err := testCACertPEM()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+	source := backend.DataSourceInstanceSettings{
+		JSONData: []byte(`{
+			"o_hostname": "db.example.internal",
+			"o_port": 2484,
+			"o_service": "XEPDB1",
+			"o_user": "SYSTEM",
+			"tlsMode": "custom-ca",
+			"tlsCaPem": ` + jsonCA(caPEM) + `
+		}`),
+		DecryptedSecureJSONData: map[string]string{"o_password": "pw"},
+	}
+	inst, err := NewDatasource(context.Background(), source)
+	if err != nil {
+		t.Fatalf("NewDatasource custom-ca: %v", err)
+	}
+	ds := inst.(*Datasource)
+	defer ds.Dispose()
+	if ds.db == nil {
+		t.Fatal("expected a datasource with a pool")
+	}
+}
+
+// testCACertPEM generates a throwaway self-signed CA certificate and returns
+// its PEM, so TLS tests have real (non-empty) verify material without fixtures.
+func testCACertPEM() (string, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return "", err
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), nil
+}
+
+// jsonCA embeds a PEM string inside a JSON object literal, escaping it for the
+// jsonData blob the plugin settings parser expects.
+func jsonCA(pem string) string {
+	return "\"" + strings.ReplaceAll(pem, "\n", "\\n") + "\""
 }

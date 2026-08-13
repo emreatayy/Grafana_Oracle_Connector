@@ -345,3 +345,33 @@ func TestBuildFrame_ExecutedQueryString(t *testing.T) {
 		t.Errorf("meta = %+v, want ExecutedQueryString", frame.Meta)
 	}
 }
+
+func TestBuildFrame_ColumnUnits(t *testing.T) {
+	cols := []ColumnInfo{intCol("load", 5), strCol("env"), strCol("region")}
+	rows := [][]any{{int64(90), "prod", "west"}}
+	units := map[string]string{"LOAD": "percent", "REGION": "string"}
+	frame, err := BuildFrame(cols, rows, Options{Format: FormatTable, ColumnUnits: units})
+	if err != nil {
+		t.Fatalf("BuildFrame: %v", err)
+	}
+	if frame.Fields[0].Config == nil || frame.Fields[0].Config.Unit != "percent" {
+		t.Errorf("LOAD Config = %+v, want unit %q", frame.Fields[0].Config, "percent")
+	}
+	if frame.Fields[1].Config != nil {
+		t.Errorf("ENV Config = %+v, want nil (unmapped column)", frame.Fields[1].Config)
+	}
+	if frame.Fields[2].Config == nil || frame.Fields[2].Config.Unit != "string" {
+		t.Errorf("REGION Config = %+v, want unit %q", frame.Fields[2].Config, "string")
+	}
+
+	// No mapping table at all → every Config stays nil.
+	plain, err := BuildFrame(cols, rows, Options{Format: FormatTable})
+	if err != nil {
+		t.Fatalf("BuildFrame (no units): %v", err)
+	}
+	for _, f := range plain.Fields {
+		if f.Config != nil {
+			t.Errorf("field %s unexpectedly got Config %+v without a mapping", f.Name, f.Config)
+		}
+	}
+}

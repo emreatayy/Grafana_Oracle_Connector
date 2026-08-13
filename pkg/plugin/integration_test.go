@@ -1098,3 +1098,42 @@ func TestIntegration_DashboardExamples(t *testing.T) {
 	}
 	t.Logf("dashboard SQL panels verified: %d time-series points + user_tables table of %d rows", 96, frame.Rows())
 }
+
+// TestIntegration_ColumnUnits proves the F14 name→Grafana-unit mapping lands as
+// data.FieldConfig.Unit from the setting text to the frame the frontend sees
+// (report §16). The setting is matched case-insensitively; unmapped columns get
+// no Config.
+func TestIntegration_ColumnUnits(t *testing.T) {
+	ds := newIntegrationDatasource(t)
+	defer ds.Dispose()
+	ctx := context.Background()
+	tr := backend.TimeRange{
+		From: time.Now().Add(-time.Hour),
+		To:   time.Now(),
+	}
+
+	ds.settings.ColumnUnits = "LOAD=percent, env=none, REGION=string"
+	resp := ds.query(ctx, backend.DataQuery{
+		RefID: "A", TimeRange: tr,
+		JSON: json.RawMessage(`{"sql":"SELECT 0.756 AS load, 'PROD' AS region FROM DUAL","format":"table"}`),
+	}, "f14-units")
+	if resp.Error != nil {
+		t.Fatalf("query error: %v", resp.Error)
+	}
+	if len(resp.Frames) != 1 {
+		t.Fatalf("frames = %d, want 1", len(resp.Frames))
+	}
+	frame := resp.Frames[0]
+	if frame.Fields[0].Name != "LOAD" {
+		t.Fatalf("field 0 = %q, want LOAD", frame.Fields[0].Name)
+	}
+	if cfg := frame.Fields[0].Config; cfg == nil || cfg.Unit != "percent" {
+		t.Errorf("LOAD Config = %+v, want Unit %q", cfg, "percent")
+	}
+	if frame.Fields[1].Name != "REGION" {
+		t.Fatalf("field 1 = %q, want REGION", frame.Fields[1].Name)
+	}
+	if cfg := frame.Fields[1].Config; cfg == nil || cfg.Unit != "string" {
+		t.Errorf("REGION Config = %+v, want Unit %q", cfg, "string")
+	}
+}

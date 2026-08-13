@@ -47,8 +47,8 @@ procedures) — all driven from the query editor.
 | Stage | State |
 |---|---|
 | Design | ✅ Complete — `docs/project-report.md` (v2) |
-| Empirical verification | ✅ **18 of 18** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1, Prometheus 3.5.0) — see `verification/` |
-| Implementation | ✅ **F13 done** (connection core + typed mapping + macro & variable engine + SQL query editor + basic alerting + Prometheus proxy backend + PromQL editor & metric browser + query variables + annotations + editor autocomplete + health JSON + ORA error resolution + command execution / operations UI + security audit, log hygiene & self-metrics + performance, limits, streaming & caching + **user installation guide, dashboard example templates + readonly account SQL, `mage archive`/`mage validate` packaging, sign + release workflow, full e2e**) — next: F14 (ops/optional) |
+| Empirical verification | ✅ **19 of 19** design assumptions verified (Oracle 21c XE, go-ora v2.9.0, Grafana 12.4/13.1, Prometheus 3.5.0) — see `verification/` |
+| Implementation | ✅ **All 16 phases complete (F0–F15)** (connection core + typed mapping + macro & variable engine + SQL query editor + basic alerting + Prometheus proxy backend + PromQL editor & metric browser + query variables + annotations + editor autocomplete + health JSON + ORA error resolution + command execution / operations UI + security audit, log hygiene & self-metrics + performance, limits, streaming & caching + user installation guide, dashboard example templates + readonly account SQL, `mage archive`/`mage validate` packaging, sign + release workflow, full e2e + **F14 ops/optional: column→unit formatting, Oracle TLS (TCPS) options, TNS connect-descriptor host pass-through, Prometheus `ALERTS` Layer-3 view**) |
 
 The report's riskiest assumptions were validated empirically before any code
 was written, which produced two design corrections early:
@@ -584,9 +584,13 @@ zero validator errors, `npm run sign` signing + the tag-triggered release
 workflow, and the full e2e pass) — all verified on Grafana 12.4 + 13.1, the
 alert rules and the proxy against a real Prometheus 3.5.0, and the examples
 against a real Oracle 21c XE).
-The critical path going forward is **F14 (ops/optional)** — TLS/Wallet/TNS
-options, the Alertmanager `ALERTS` view (Layer 3 alerting), and optional
-exporter orchestration; all remaining items are clearly marked optional.
+The critical path going forward was **F14 (ops/optional)** — TLS/TNS
+options, the Prometheus `ALERTS` view (Layer 3 alerting), and optional
+exporter orchestration. **F14 is now done** (column→unit formatting, Oracle
+TLS / TCPS options, TNS connect-descriptor host pass-through, and the
+self-contained Layer-3 `ALERTS` demo rule — the remaining optional exporter
+orchestration is explicitly out of scope, see [Status](#status)). **All 16
+phases F0–F15 are complete.**
 
 | Wave | Phases | Scope | Effort |
 |---|---|---|---|
@@ -597,9 +601,10 @@ exporter orchestration; all remaining items are clearly marked optional.
 
 **F15 (command execution UI)** was the last Wave C phase and **F11 + F12 +
 F13 (security/self-metrics, performance/limits, then documentation /
-templates / packaging / e2e)** are the first three Wave D phases to land —
-all **done** (see [Status](#status)). Full phase-by-phase detail with
-acceptance criteria: report §18.
+templates / packaging / e2e)** were the first three Wave D phases to land —
+all **done**, and **F14 (ops/optional — TLS/TNS, Layer 3 `ALERTS`, column
+units) completed the phase list** (see [Status](#status)). Full phase-by-phase
+detail with acceptance criteria: report §18.
 
 ---
 

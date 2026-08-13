@@ -15,8 +15,10 @@ const pluginE2eAuth = `${dirname(require.resolve('@grafana/plugin-e2e'))}/auth`;
  */
 export default defineConfig<PluginOptions>({
   testDir: './tests',
-  /* Run tests in files in parallel */
-  fullyParallel: true,
+  // The suite shares provisioned Grafana datasources and a live Oracle
+  // instance. Keeping one worker avoids concurrent dashboard/query cleanup
+  // cancelling another test's request on Grafana 12 (F14 matrix regression).
+  workers: 1,
   /* Fail the build on CI if you accidentally left test.only in the source code. */
   forbidOnly: !!process.env.CI,
   /* Retry on CI only */

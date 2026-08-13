@@ -134,6 +134,7 @@ services:
       - "127.0.0.1:9090:9090"
     volumes:
       - ./devenv/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./devenv/rules.yml:/etc/prometheus/rules.yml:ro
 
   exporter:
     # Oracle metrics exporter (report §9 / Option D) — point it at a database

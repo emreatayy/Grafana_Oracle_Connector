@@ -48,6 +48,12 @@ export interface MyDataSourceOptions extends DataSourceJsonData {
   o_service?: string;
   o_sid?: string;
   o_user?: string;
+  // F14: Oracle server TLS (report §16). tlsMode: '' = plain (default),
+  // 'skip-verify' = TLS without cert validation (operator opt-in),
+  // 'custom-ca' = TLS verified against tlsCaPem. The CA is a public
+  // certificate, so it lives in jsonData, not secureJsonData.
+  tlsMode?: '' | 'skip-verify' | 'custom-ca';
+  tlsCaPem?: string;
   maxOpenConns?: number;
   maxIdleConns?: number;
   connMaxLifetimeSec?: number;
@@ -65,6 +71,10 @@ export interface MyDataSourceOptions extends DataSourceJsonData {
   // ADR-8: big NUMBER (scale=0, precision>15) policy. Empty = per-format
   // default (string in table, float in time_series).
   largeNumberMode?: LargeNumberMode;
+  // F14: column→Grafana display-unit mapping (report §16), "NAME=unit" lines
+  // or comma-separated. Applied by the backend as FieldConfig.Unit; column
+  // names match case-insensitively (Oracle returns uppercase unquoted names).
+  columnUnits?: string;
   // Variable names that may expand unquoted in SQL (report §8.2). A hint, not a
   // trust grant — the backend still verifies a strict numeric literal.
   numericVariables?: string[];

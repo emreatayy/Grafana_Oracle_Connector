@@ -51,8 +51,22 @@ func NewDatasource(_ context.Context, s backend.DataSourceInstanceSettings) (ins
 	// registered "oracle" driver: the default driver is a package-level
 	// singleton whose session-param map would be shared across datasource
 	// instances. NewConnector allocates a private OracleDriver, so session
-	// parameters stay isolated per datasource (report §5.4).
-	db := sql.OpenDB(go_ora.NewConnector(dsn))
+	// parameters stay isolated per datasource (report §5.4). The configured
+	// TLS mode (report §16) is attached to the connector so go-ora wraps the
+	// socket in tls.Client at connect; a nil config keeps plain connections.
+	connector := go_ora.NewConnector(dsn)
+	tlsConfig, err := oracle.BuildTLSConfig(&settings.OracleSettings)
+	if err != nil {
+		return nil, err
+	}
+	if tlsConfig != nil {
+		// NewConnector always allocates an *OracleConnector (the driver.Connector
+		// return hides the concrete type); WithTLSConfig is what makes go-ora
+		// wrap the session socket in tls.Client.
+		connector.(*go_ora.OracleConnector).WithTLSConfig(tlsConfig)
+	}
+
+	db := sql.OpenDB(connector)
 	db.SetMaxOpenConns(settings.MaxOpenConns)
 	db.SetMaxIdleConns(settings.MaxIdleConns)
 	db.SetConnMaxLifetime(time.Duration(settings.ConnMaxLifetimeSec) * time.Second)

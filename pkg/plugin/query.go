@@ -16,6 +16,7 @@ import (
 
 	"github.com/emreatayy/oracle-datasource/pkg/convert"
 	"github.com/emreatayy/oracle-datasource/pkg/interpolate"
+	"github.com/emreatayy/oracle-datasource/pkg/models"
 	"github.com/emreatayy/oracle-datasource/pkg/prom"
 )
 
@@ -377,7 +378,8 @@ func (d *Datasource) buildFrame(rows *sql.Rows, qm queryModel, dsUID, mode strin
 		TimeColumn:          qm.TimeColumn,
 		MaxSeries:           d.settings.MaxSeries,
 		LargeNumbers:        large,
-		ExecutedQueryString: qm.SQL, // raw SQL before interpolation (report §7.5)
+		ColumnUnits:         models.ParseColumnUnits(d.settings.ColumnUnits), // report §16
+		ExecutedQueryString: qm.SQL,                                          // raw SQL before interpolation (report §7.5)
 	}
 	_, kinds := convert.Resolve(cols, opt)
 

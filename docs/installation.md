@@ -96,6 +96,16 @@ fields:
 A SID is requested with the `?SID=` option and resolves to a `(SID=...)`
 descriptor instead of `(SERVICE_NAME=...)`.
 
+**TNS connect descriptor (F14):** the **Host** field also accepts a full TNS
+connect descriptor. When it starts with `(`, the whole `(DESCRIPTION=…)` string
+is passed to go-ora, which reads the ADDRESS list and CONNECT_DATA from it —
+**Port / Service name / SID are then ignored**, and `tnsnames.ora` is **not**
+consulted (paste the resolved descriptor, or use a Connection string):
+
+```
+Host: (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=dbhost)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=ORCLPDB1)))
+```
+
 ### 3.2 Prometheus proxy (optional)
 
 A Prometheus-mode tab lets queries run against a Prometheus HTTP API v1 through
@@ -137,6 +147,29 @@ When the proxy is **disabled**, Prometheus-mode queries fail cleanly with a 400
 After saving, use **Save & test**. The "Test" result is structured JSON —
 `{"oracle":{"ok":…,"version":…},"prometheus":{"enabled":…,"ok":…}}` — with the
 readable, credential-free error in the failing subsystem (report §13).
+
+### 3.5 Formatting
+
+| Field | Meaning |
+|---|---|
+| Column units | Map Oracle columns to Grafana display units (report §16), one `NAME=unit` per line or comma-separated — e.g. `LOAD=percent` or `MEMORY_BYTES=decbytes`. Column names match **case-insensitively** (Oracle returns uppercase unquoted names). Applied server-side as `FieldConfig.Unit`, so panels, tooltips and axes use the unit automatically |
+
+### 3.6 Connection security (TLS)
+
+Oracle TLS (TCPS listeners) is supported without any wallet:
+
+| Field | Meaning |
+|---|---|
+| TLS mode | `None` (plain, default) · `SSL, skip certificate verify` · `SSL, verify custom CA` |
+| CA certificate | PEM bundle the server is verified against when TLS mode is `SSL, verify custom CA` (stored in `jsonData` — it is a public certificate, not a credential) |
+
+- `skip certificate verify` is an **operator opt-in** for self-signed test
+  racks: it encrypts the session but performs no certificate validation. It is
+  never the default.
+- `verify custom CA` pins the server to the configured CA, layered **on top of**
+  the system roots. A wrong or unparsable bundle is a **hard error at
+  save-time** — the datasource fails to construct rather than silently
+  downgrading to plaintext.
 
 ---
 
@@ -221,6 +254,34 @@ same way they do for SQL queries.
 > A Prometheus-only datasource still requires the Oracle **connection** fields
 > to be filled in (the plugin builds its DSN at instance construction) — it is
 > simply never queried in SQL mode.
+
+### 5.1 Layer 3: alerting on Prometheus `ALERTS` (F14)
+
+The plugin proxies the Prometheus HTTP API as-is, so **Prometheus' own alert
+state is queryable**: `ALERTS{alertstate="firing"}` returns one time series per
+firing alert (report §10.1 Layer 3). This is the standard way to surface
+exporter-driven alerts — e.g. "the Oracle exporter itself is down" — straight
+onto a Grafana panel, without a second datasource.
+
+A reference rule ships in the dev environment (`devenv/rules.yml`): with no
+exporter running, `up{job="oracle_exporter"} == 0` evaluates true and
+`OracleExporterDown` starts firing ~1 minute after Prometheus starts. Query it
+through the datasource in **Prometheus** mode:
+
+```promql
+ALERTS{alertstate="firing"}
+```
+
+Each firing series carries the alert labels (`alertname`, `severity`, …) so a
+panel or alert rule can group by them — e.g. `max by (alertname)
+(ALERTS{alertstate="firing"})`.
+
+> **Option D — exporter orchestration/health** (optional, **not implemented**):
+> auto-starting the exporter container, or health-probing it, is out of scope
+> for this datasource. The plugin's job ends at *querying* the exporter's
+> metrics; running and health-checking the exporter belongs to your
+> orchestration layer (systemd, Docker, Kubernetes). The `up{job=...} == 0`
+> alert above covers the common "exporter is down" case regardless.
 
 ---
 
