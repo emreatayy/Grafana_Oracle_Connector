@@ -3,7 +3,7 @@ module github.com/emreatayy/oracle-datasource
 go 1.26.5
 
 require (
-	github.com/grafana/grafana-plugin-sdk-go v0.296.1
+	github.com/grafana/grafana-plugin-sdk-go v0.296.2
 	github.com/prometheus/client_golang v1.23.2
 	github.com/sijms/go-ora/v2 v2.9.0
 )
