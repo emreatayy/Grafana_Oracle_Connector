@@ -101,26 +101,119 @@ returns SUCCESS, and the rules API accepts an alert rule that queries it
 
 Grafana **12.3+** and Oracle **12c+** are required; **no Oracle Client (OCI /
 Instant Client) is needed** — the backend is a pure-Go driver. The full
-step-by-step guide — archive install, the unsigned-plugin flag, every datasource
-field, the read-only user, the Prometheus proxy, the exporter guide and
-troubleshooting — is in
+step-by-step guide — archive installation, unsigned-plugin configuration,
+every datasource field, the read-only user, the Prometheus proxy, the exporter
+guide and troubleshooting — is in
 [`docs/installation.md`](https://github.com/emreatayy/Grafana_Oracle_Connector/blob/main/docs/installation.md).
 
 ### Quick install
 
 1. Download `emreatayy-oracle-datasource-<version>.zip` (or `.tar.gz`) from the
    release assets.
-2. Unpack it so the plugin folder `emreatayy-oracle-datasource/` (with
-   `plugin.json` at its root) lands under Grafana's plugin directory
-   (`/var/lib/grafana/plugins` by default).
-3. Restart Grafana. A **signed** release archive loads as-is; an **unsigned**
-   build additionally needs:
+
+2. Unpack the archive so the plugin folder
+   `emreatayy-oracle-datasource/` (with `plugin.json` at its root) is placed
+   under Grafana's plugin directory (`/var/lib/grafana/plugins` by default).
+
+   The resulting directory structure should look like:
+
+   ```text
+   /var/lib/grafana/plugins/
+   └── emreatayy-oracle-datasource/
+       ├── plugin.json
+       ├── dist/
+       └── ...
+   ```
+
+3. Configure Grafana to allow the plugin to load.
+
+   A **signed** release archive does not require any additional plugin
+   configuration.
+
+   An **unsigned** plugin build requires Grafana to explicitly allow the
+   plugin ID `emreatayy-oracle-datasource`.
+
+   You can allow the unsigned plugin using the
+   `GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS` environment variable:
+
    ```sh
    export GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=emreatayy-oracle-datasource
    ```
-4. **Connections → Data sources → Oracle Datasource**: enter host / port, a
-   service name **or** SID, and the account credentials. **Save & test** — the
-   result is structured JSON (`{"oracle":{...},"prometheus":{...}}`).
+
+   If Grafana is running as a systemd service, configure this environment
+   variable in the Grafana service environment before restarting Grafana.
+
+   Alternatively, add the following to `grafana.ini`:
+
+   ```ini
+   [plugins]
+   allow_loading_unsigned_plugins = emreatayy-oracle-datasource
+   ```
+
+   On a typical Linux installation, `grafana.ini` is located at:
+
+   ```text
+   /etc/grafana/grafana.ini
+   ```
+
+   If the `[plugins]` section already exists, add the
+   `allow_loading_unsigned_plugins` setting to the existing section instead of
+   creating a second `[plugins]` section.
+
+4. Restart the Grafana server:
+
+   ```sh
+   sudo systemctl restart grafana-server
+   ```
+
+5. After Grafana restarts, go to:
+
+   **Connections → Data sources → Add new data source**
+
+   Select **Oracle Datasource** from the data source list.
+
+6. Configure the Oracle connection:
+
+   - **Host** — Oracle database hostname or IP address.
+   - **Port** — Oracle listener port, normally `1521`.
+   - **Service Name** — Oracle service name, or
+   - **SID** — Oracle SID when using an SID-based connection.
+   - **Username** — Oracle database username.
+   - **Password** — Oracle database password.
+
+   Click **Save & test** to verify the connection. The health check returns
+   structured JSON similar to:
+
+   ```json
+   {
+     "oracle": {
+       "...": "..."
+     },
+     "prometheus": {
+       "...": "..."
+     }
+   }
+   ```
+
+If the plugin does not appear in the data source creation list after
+restarting Grafana, verify that `plugin.json` is located directly under
+`/var/lib/grafana/plugins/emreatayy-oracle-datasource/` and check the Grafana
+server logs for plugin loading errors:
+
+```sh
+sudo journalctl -u grafana-server -n 200 --no-pager
+```
+
+### Recommended read-only user
+
+Connect the datasource as a dedicated **read-only** Oracle account, never as
+`SYSTEM`/`SYS`. The plugin blocks anything but `SELECT`/`WITH` at the query
+path (ADR-7); the database account is the second layer.
+
+[`examples/readonly_user.sql`](https://github.com/emreatayy/Grafana_Oracle_Connector/blob/main/examples/readonly_user.sql)
+creates the account with the minimum grants (`CREATE SESSION`, `SELECT ON
+SYS.V_$VERSION` for the health banner, `SELECT` on the dashboards' tables) and
+verifies that a `DELETE` fails with `ORA-01031`.
 
 ### Recommended read-only user
 
