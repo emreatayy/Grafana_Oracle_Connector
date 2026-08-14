@@ -280,25 +280,99 @@ See [Documentation](#documentation) for the full report.
 
 ## Version Support
 
-Official support matrix (enforced in CI from F0):
+Compatibility is determined through Docker-based integration tests. Versions are
+classified into three categories:
 
-| System | Official support (floor) | Primary (main) lines | CI test matrix |
+- 🟢 **Tested & Working** — explicitly tested and confirmed working.
+- 🟡 **Supported / May Have Issues** — within the supported version range, but
+  not fully covered by the CI test matrix or may have compatibility issues.
+- 🔴 **Not Working / Unsupported** — failed compatibility tests or is outside
+  the officially supported version range.
+
+### Compatibility Matrix
+
+| System | 🟢 Tested & Working | 🟡 Supported / May Have Issues | 🔴 Not Working / Unsupported |
 |---|---|---|---|
-| **Grafana** | **≥ 12.3** | 12.4, 13.x | `12.4` + `13.1` |
-| **Oracle** | **≥ 12c** | 19c, 21c, 23ai | XE `18c` + `21c` + `23c` |
-| **Prometheus** | **≥ 2.40 + 3.x** | 3.x | `3.5` (LTS) |
+| **Grafana** | `12.4`, `13.1` | `12.3.x`, other `13.x` releases | `< 12.3` |
+| **Oracle Database** | `18c XE`, `21c XE`, `23c XE` | `12c`, `19c`, `21c`, `23ai` | `< 12c` |
+| **Prometheus** | `3.5` | `≥ 2.40`, other `3.x` releases | `< 2.40` |
 
-The Grafana floor is 12.3, not 12.0: the pinned `@grafana/ui`/`@grafana/data`
-13.1.0 enforce it (report §2.5). Grafana 11.x and Oracle 11g R2 are "works but
-not supported" (compatible, unofficial). The rationale for these policies is in
-report §2.
+> **Note:** The matrix above represents the current compatibility policy.
+> Versions listed as "Supported / May Have Issues" are within the supported
+> range but are not necessarily covered by the full integration test matrix.
 
-Pinned dependencies (pinned at F0, 2026-08-07):
+### Grafana
+
+The plugin is officially supported on **Grafana 12.3 and later**.
+
+Grafana versions explicitly included in the integration test matrix are:
+
+- `12.4`
+- `13.1`
+
+Grafana `12.3.x` and other compatible `13.x` releases are considered supported,
+but may have compatibility issues if they are not explicitly covered by CI.
+
+Grafana versions below `12.3` are not officially supported. Grafana 11.x may
+work with some plugin functionality, but is considered **unsupported**.
+
+### Oracle Database
+
+The plugin is officially supported on **Oracle Database 12c and later**.
+
+The Docker-based integration tests currently cover:
+
+- Oracle XE `18c`
+- Oracle XE `21c`
+- Oracle XE `23c`
+
+Oracle `12c`, `19c`, `21c`, and `23ai` are within the supported compatibility
+range but may not be continuously covered by the Docker test matrix.
+
+Oracle Database 11g R2 and earlier are not officially supported. They may work
+with some functionality, but compatibility is not guaranteed.
+
+### Prometheus
+
+The plugin supports **Prometheus 2.40 and later**, including the Prometheus 3.x
+series.
+
+The current integration test matrix includes:
+
+- Prometheus `3.5`
+
+Other Prometheus `2.x` releases at or above `2.40`, as well as other `3.x`
+releases, are considered supported but may have compatibility issues if they
+are not explicitly covered by CI.
+
+Prometheus versions below `2.40` are not officially supported.
+
+### Support Categories
+
+| Category | Description |
+|---|---|
+| 🟢 **Tested & Working** | The version has been explicitly tested in the Docker/CI integration environment and is currently confirmed to work. |
+| 🟡 **Supported / May Have Issues** | The version is within the official compatibility range, but is not fully covered by the current test matrix or may have known compatibility limitations. |
+| 🔴 **Not Working / Unsupported** | The version failed compatibility testing or is outside the official supported version range. |
+
+**Important:** "Supported" does not mean that every version has been individually
+tested. Versions in the supported range that are not listed in the tested
+matrix should be considered **best-effort compatibility** until explicitly
+verified.
+
+### Pinned Dependencies
+
+Pinned dependencies at F0 (2026-08-07):
 
 - `github.com/sijms/go-ora/v2` **v2.9.0**
 - `github.com/grafana/grafana-plugin-sdk-go` **v0.296.1**
 - `@grafana/ui` / `@grafana/data` **13.1.0**
-- Node ≥ 22, Go ≥ 1.26 (development toolchain)
+- Node **≥ 22**
+- Go **≥ 1.26**
+
+Node and Go versions are development/build toolchain requirements and are
+independent of the Grafana, Oracle Database, and Prometheus runtime
+compatibility matrix.
 
 ---
 
