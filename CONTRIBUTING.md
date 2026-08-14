@@ -9,8 +9,7 @@ request.
 
 - [Project conventions](#project-conventions)
 - [Design-first workflow](#design-first-workflow)
-- [Development setup](#development-setup)
-- [Running the verification harness](#running-the-verification-harness)
+- [Plugin Installation](#plugin-installation)
 - [Pull request process](#pull-request-process)
 - [Commit message style](#commit-message-style)
 - [Issue templates](#issue-templates)
@@ -46,79 +45,14 @@ Implementation follows the 16-phase roadmap in `docs/project-report.md`
 4. **Then implement.** Link the pull request to the report section / ADR it
    implements.
 
-## Development setup
+## Plugin Installation
 
-Prerequisites: Go ≥ 1.26, Node.js ≥ 22, Docker (Docker Desktop).
+Grafana servers can load plugins from the `/var/lib/grafana/plugins` folder.
+Download the `emreatayy-oracle-datasource-<version>.tar.gz` or `.zip` release
+archive and extract it to this folder.
 
-```sh
-# Clone and enter the project
-git clone https://github.com/emreatayy/Grafana_Oracle_Connector.git
-cd Grafana_Oracle_Connector
-
-# Verification harness (Go)
-cd verification
-go mod tidy
-```
-
-The plugin build loop (`@grafana/create-plugin` + `mage`) is introduced in F0;
-until then the repository contains the design report and the verification
-harness only.
-
-## Running the verification harness
-
-The harness validates the design assumptions that are documented in report §21:
+For a `.tar.gz` archive:
 
 ```sh
-cd verification
-docker compose --profile oracle21 up -d      # Oracle 21c XE on 127.0.0.1:1521
-docker compose --profile oracle_tr up -d     # Turkish-charset DB on 127.0.0.1:1522 (optional)
-
-ORACLE_PASSWORD=verif_password go run ./probe                     # checks 1, 2, 4, 8
-ORACLE_PASSWORD=verif_password ORACLE_PORT=1522 go run ./probe --port 1522   # check 7
-```
-
-Wait for the Oracle healthcheck to report `healthy` (a few minutes; the amd64
-images run under Rosetta on Apple Silicon). Full instructions:
-`verification/README.md`.
-
-## Pull request process
-
-1. **Fork** the repository (or work on a branch for maintainers).
-2. **Create a branch** with a descriptive name, e.g.
-   `feat/f2-type-mapping` or `fix/f1-timeout`.
-3. Make your changes — **commit message style below**.
-4. If you changed behavior, update the relevant report section, CHANGELOG.md,
-   and (when applicable) the verification harness.
-5. Open a **pull request** against `main` using the PR template.
-6. The PR should:
-   - describe the change and link the report section / ADR it implements,
-   - state which verification checks were run and their outcome,
-   - keep the diff focused on one concern.
-
-## Commit message style
-
-Conventional Commits, English only:
-
-```
-<type>(<scope>): <short summary>
-
-<body — what and why, one paragraph or bullet list>
-```
-
-`type`: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `perf`,
-`build`, `ci`. `scope` examples: `report`, `verification`, `f0`, `f2`,
-`release`. Example:
-
-```
-feat(verification): add ANSI-literal index usage check
-
-Explains why: ADR-9 depended on TIMESTAMP literals using the index on DATE
-columns; the probe now proves they full-scan and that TO_DATE keeps the
-index, which is why ADR-9 was revised.
-```
-
-## Issue templates
-
-Please use the GitHub issue templates (bug report / feature request) —
-they ask for the report-section references and verification results that make
-triage fast.
+sudo tar -xzf emreatayy-oracle-datasource-<version>.tar.gz \
+  -C /var/lib/grafana/plugins
