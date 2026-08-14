@@ -460,49 +460,11 @@ func SourceArchive() error {
 	if err != nil {
 		return err
 	}
+
 	base := fmt.Sprintf("%s-%s-source", pluginID, version)
 	zipPath := filepath.Join(distDir, base+".zip")
 	tarPath := filepath.Join(distDir, base+".tar.gz")
 
-	// Files/dirs to exclude
-	exclude := map[string]bool{
-		"dist": true, "node_modules": true, ".git": true, ".github": true,
-		"verification": true, "devenv": true, "tests": true, "playwright": true,
-		"test-results": true, "playwright-report": true, "examples": true,
-		"pkg": true, "src": true, // source is in root, but we want to include them
-	}
-
-	// We'll walk the project root and include everything except excluded dirs
-	projectRoot := "."
-	return filepath.WalkDir(projectRoot, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if path == "." {
-			return nil
-		}
-		// Check if any path component is excluded
-		rel, _ := filepath.Rel(projectRoot, path)
-		parts := strings.Split(rel, string(filepath.Separator))
-		for _, part := range parts {
-			if exclude[part] {
-				if d.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-		}
-		// Skip hidden files/dirs except .config, .eslintrc etc
-		if strings.HasPrefix(d.Name(), ".") && !strings.HasPrefix(d.Name(), ".config") && !strings.HasPrefix(d.Name(), ".eslint") && !strings.HasPrefix(d.Name(), ".prettier") && !strings.HasPrefix(d.Name(), ".golangci") && !strings.HasPrefix(d.Name(), ".npmrc") && !strings.HasPrefix(d.Name(), ".nvmrc") {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		return nil
-	})
-
-	// Actually create archives using the same pattern as Archive() but from project root
 	return createSourceArchives(zipPath, tarPath, base)
 }
 
